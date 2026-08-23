@@ -1,0 +1,17 @@
+[project]
+name = "cross-counter"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "anthropic>=0.121.0",
+    "beautifulsoup4>=4.15.0",
+    "charset-normalizer>=3.4.0",
+    "kaleido>=0.2.1",
+    "openpyxl>=3.1.5",
+    "pandas>=3.0.5",
+    "pdfplumber>=0.11.10",
+    "plotly>=6.0.0",
+    "streamlit>=1.61.1",
+]

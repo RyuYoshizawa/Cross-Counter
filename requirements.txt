@@ -1,0 +1,9 @@
+streamlit
+pandas
+openpyxl
+charset-normalizer
+plotly
+kaleido
+anthropic
+pdfplumber
+beautifulsoup4
