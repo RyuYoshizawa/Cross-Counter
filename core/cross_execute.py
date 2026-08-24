@@ -66,6 +66,12 @@ def _apply_followup_other_override(table: pd.DataFrame, target_entry: dict, targ
     対応するRAW列が見つからない・そもそもその他行が無い（other_bucket=False）場合は何もしない
     ——現状GT（単純集計）のみ対応、クロス集計・トリプルクロス・一覧型クロスは対象外
     （属性カテゴリごとの未移設人数という別概念が必要になるため、意図的にスコープ外）。
+
+    **未解決の課題（2026-08-24、ユーザーからの指摘）**: この「集計本体（other_label付きで
+    normalに計算した後、特定の行だけ別ロジックの数値で上書きする」という設計自体、スマートでは
+    ないという指摘を受けている。将来的にはcore.aggregate側で「その他」の数え方そのものを
+    プラガブルにする等、もっと素直な設計に見直す余地がある——今回は動作を優先して現状の形で
+    出荷したが、次にこの周辺を触る際は再検討すること。
     """
     followup_id = target_entry.get('other_followup_entry_id')
     if not target_other or not followup_id:

@@ -16,6 +16,25 @@ from core.text_normalize import normalize_for_comparison
 _MULTI_DELIM = ', '
 
 
+def build_full_raw_dataframe(rows: list[dict], columns: list[str], excluded_row_ids: list[int]) -> pd.DataFrame:
+    """
+    現在のRAWデータ（st.session_state['raw_rows']）を、加工・選択肢の絞り込み・短縮化を一切
+    行わずそのまま書き出す（検証用、ユーザーとの合意事項2026-08-24: 「RAWデータを改変しない」
+    方針自体は変えないが、その他自由記述の抽出・RAWデータ補正等で変化していく作業中のRAW
+    データの「現状」を人が確認できないと検証時に致命的、という指摘を受けて追加）。
+    _row_id・除外対象（テスト回答削除で除外指定されているか）の列を先頭に付け、以降は
+    raw_columns（columns引数）の順番そのまま。
+    """
+    df = pd.DataFrame(rows)
+    excluded = set(excluded_row_ids)
+    out = pd.DataFrame(index=df.index)
+    out['_row_id'] = df['_row_id']
+    out['除外対象'] = df['_row_id'].isin(excluded)
+    for col in columns:
+        out[col] = df[col]
+    return out
+
+
 def build_export_dataframe(df: pd.DataFrame, entries: list[dict], columns: list[str],
                             selections: list[dict], *, add_serial: bool = True) -> pd.DataFrame:
     """

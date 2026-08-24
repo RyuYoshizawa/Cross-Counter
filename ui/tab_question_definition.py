@@ -16,6 +16,7 @@ import llm_client
 from core.aggregate import resolve_other_label
 from core.cleaning import find_mojibake_candidates
 from core.cross_plan import gridable_questions, question_display_label
+from core.data_export import build_full_raw_dataframe
 from core.form_html import SHORT_LABEL_MODEL, parse_form_html, propose_short_labels
 from core.form_pdf import extract_pdf_text, propose_question_definitions
 from core.other_text import build_other_text_columns
@@ -700,6 +701,14 @@ def _render_raw_data_check(columns: list[str], rows: list[dict], raw_filename: s
     st.caption(
         f'ファイル: {raw_filename} ／ 文字コード: {raw_encoding} ／ '
         f'設問数: {len(columns)} ／ 回答数: {len(df)}'
+    )
+    full_raw_df = build_full_raw_dataframe(rows, columns, st.session_state.get('excluded_row_ids', []))
+    st.download_button(
+        '📥 現在のRAWデータをダウンロード（検証用）',
+        data=full_raw_df.to_csv(index=False).encode('utf-8-sig'),
+        file_name='RAWデータ_現状.csv', mime='text/csv', key='download_current_raw_data',
+        help='その他自由記述の抽出・RAWデータ補正等で変化した、現在のRAWデータをそのまま出力します'
+             '（元のアップロードファイル自体は書き換えていません。除外対象列はテスト回答削除の指定状況です）。',
     )
     if not entries:
         st.caption('設問定義表がまだありません。上の「設問定義表」でPDFから作成すると、RAWデータとの整合性を確認できます。')
