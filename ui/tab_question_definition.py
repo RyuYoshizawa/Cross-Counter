@@ -388,6 +388,10 @@ def _render_raw_correction(columns: list[str], df: pd.DataFrame, entries: list[d
 
     source_labels = {e['id']: question_display_label(e) for e in source_entries}
     source_ids = list(source_labels.keys())
+    if st.session_state.get('raw_correction_source_id') not in source_ids:
+        # 設問構成が変わって以前の選択肢が消えている場合は未選択に戻す（st.selectboxは
+        # 保存済みの値がoptionsに無いとStreamlitAPIExceptionになるため、この保護が必要）
+        st.session_state.pop('raw_correction_source_id', None)
     source_id = st.selectbox(
         '移動元設問（FA）', source_ids, format_func=lambda i: source_labels[i], key='raw_correction_source_id',
     )
@@ -439,6 +443,8 @@ def _render_raw_correction(columns: list[str], df: pd.DataFrame, entries: list[d
 
     dest_labels = {e['id']: question_display_label(e) for e in dest_entries}
     dest_ids = list(dest_labels.keys())
+    if st.session_state.get('raw_correction_dest_id') not in dest_ids:
+        st.session_state.pop('raw_correction_dest_id', None)
     dest_id = st.selectbox(
         '移動先設問（SA/MA）', dest_ids, format_func=lambda i: dest_labels[i], key='raw_correction_dest_id',
     )
@@ -449,8 +455,13 @@ def _render_raw_correction(columns: list[str], df: pd.DataFrame, entries: list[d
         return
 
     dest_option_texts = [o['text'] for o in dest_entry['options']]
+    replace_choices = ['新設', *dest_option_texts]
+    if st.session_state.get('raw_correction_replace_target') not in replace_choices:
+        # 移動先設問を切り替えると選択肢一覧も変わるため、前の設問の選択肢が残っていると
+        # st.selectboxがStreamlitAPIExceptionになる（移動先設問を選び直せなくなる実害があった）。
+        st.session_state.pop('raw_correction_replace_target', None)
     replace_choice = st.selectbox(
-        '置き換える移動先の選択肢', ['新設', *dest_option_texts], key='raw_correction_replace_target',
+        '置き換える移動先の選択肢', replace_choices, key='raw_correction_replace_target',
     )
     replace_target = None if replace_choice == '新設' else replace_choice
     is_multi = dest_entry['format'] == FORMAT_MA
