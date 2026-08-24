@@ -27,6 +27,9 @@ _PROJECT_RESET_KEYS = [
     'cross_table_format', 'triple_cross_specs', 'list_cross_attrs', 'list_cross_targets',
     'list_cross_sort_order', 'cross_table_rows', 'cross_plan_confirmed',
     'crosstab_results', 'triple_cross_results', 'list_cross_results', 'crosstab_issues', 'usage_log',
+    'raw_correction_rows', '_raw_correction_loaded_source_id', 'raw_correction_report',
+    'raw_correction_source_id', 'raw_correction_dest_id', 'raw_correction_replace_target',
+    'raw_correction_source_handling',
     'data_export_add_serial',
     # 12はui/tab_data_export.pyの_MAX_ROWSと合わせること
     *(f'data_export_q_{i}' for i in range(12)),

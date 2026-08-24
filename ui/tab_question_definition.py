@@ -14,6 +14,7 @@ import streamlit as st
 
 import llm_client
 from core.cleaning import find_mojibake_candidates
+from core.cross_plan import gridable_questions, question_display_label
 from core.form_html import SHORT_LABEL_MODEL, parse_form_html, propose_short_labels
 from core.form_pdf import extract_pdf_text, propose_question_definitions
 from core.other_text import build_other_text_columns
@@ -23,13 +24,26 @@ from core.question_definition import (
     FORMAT_MA,
     FORMAT_SA,
     add_manual_entry,
+    add_option_to_entry,
     apply_review_edits,
     build_consistency_issues,
     build_entries,
     count_invalid_questions,
     find_unmatched_value_entries,
+    match_to_raw_columns,
     to_review_dataframe,
 )
+from core.raw_correction import (
+    PROPOSAL_MODEL,
+    apply_correction,
+    build_source_rows,
+    compute_destination_preview,
+    detect_similar_option,
+    fa_source_entries,
+    propose_choice_names,
+    unique_answers_for_proposal,
+)
+from core.text_normalize import normalize_for_comparison
 from core.usage_log import DEFAULT_FX_RATE, build_entry as build_log_entry, snapshot as usage_snapshot
 
 # 質問数が多い・構造判断（SA/MA/FA・matrix候補）の精度が重要なため、コスト重視のhaikuではなく
@@ -44,7 +58,7 @@ def render(columns: list[str], rows: list[dict], raw_filename: str, raw_encoding
     _render_question_definition(api_key)
 
     st.divider()
-    _render_raw_data_check(columns, rows, raw_filename, raw_encoding, excluded_row_ids)
+    _render_raw_data_check(columns, rows, raw_filename, raw_encoding, excluded_row_ids, api_key)
 
 
 def _render_question_definition(api_key: str) -> None:
@@ -340,6 +354,165 @@ def _render_other_text_extraction(columns: list[str], df: pd.DataFrame, entries:
         st.rerun()
 
 
+def _render_raw_correction(columns: list[str], df: pd.DataFrame, entries: list[dict], api_key: str) -> None:
+    """
+    RAWデータ補正機能（アフターコーディング、指示用ファイル「RAWデータ補正機能.xlsx」）。
+    FA設問の回答をAIの提案をもとに選択肢化し、SA/MA設問の回答・設問定義に統合する。
+    1回の操作で「移動元FA設問1つ→移動先SA/MA設問1つ」の組み合わせを処理する（移動元を
+    切り替えると作業テーブルはリセットされる——編集済みの選択肢名は失われるが、対応関係が
+    崩れたまま計算を続けるよりも安全なため）。
+    """
+    st.markdown('##### RAWデータ補正（アフターコーディング）')
+
+    report = st.session_state.pop('raw_correction_report', None)
+    if report:
+        names_text = '、'.join(f'「{n}」' for n in report['names'])
+        st.success(
+            f"{report['count']}件の回答を「{report['dest_label']}」に反映しました"
+            f"（新選択肢: {names_text}）。設問定義にも登録済みです。"
+        )
+
+    source_entries = fa_source_entries(entries)
+    dest_entries = gridable_questions(entries)
+    if not source_entries or not dest_entries:
+        st.caption(
+            '自由記述（FA）設問の回答を選択肢化するための機能です。移動元となるFA設問と、'
+            '移動先となるSA/MA設問の両方が設問定義表に必要です。'
+        )
+        return
+
+    st.caption(
+        '自由記述設問の回答をAIの提案をもとに選択肢化し、既存のSA/MA設問の回答・設問定義に'
+        '統合します。'
+    )
+
+    source_labels = {e['id']: question_display_label(e) for e in source_entries}
+    source_ids = list(source_labels.keys())
+    source_id = st.selectbox(
+        '移動元設問（FA）', source_ids, format_func=lambda i: source_labels[i], key='raw_correction_source_id',
+    )
+    source_entry = next(e for e in source_entries if e['id'] == source_id)
+
+    matches = match_to_raw_columns(entries, columns)
+    entry_to_col = {m['entry']['id']: col for col, m in matches.items()}
+    source_col = entry_to_col.get(source_entry['id'])
+    if source_col is None:
+        st.warning('この設問に対応するRAW列が見つかりません（整合性チェックをご確認ください）。')
+        return
+
+    source_rows = build_source_rows(df, source_col)
+    st.caption(f'非空の回答: {len(source_rows)}件')
+    if not source_rows:
+        return
+
+    # 移動元設問を切り替えたら作業テーブル（AI提案・チェック状態）をリセットする
+    if st.session_state.get('_raw_correction_loaded_source_id') != source_id:
+        st.session_state['raw_correction_rows'] = None
+        st.session_state['_raw_correction_loaded_source_id'] = source_id
+
+    working_rows = st.session_state.get('raw_correction_rows')
+    if working_rows is None:
+        if not api_key:
+            st.info('サイドバーでAPIキーを設定すると、AIが選択肢名を提案します。')
+            return
+        if st.button('🤖 AIで選択肢名を提案する', key='raw_correction_propose'):
+            unique_texts = unique_answers_for_proposal(source_rows)
+            client = llm_client.make_client('Anthropic', api_key)
+            usage_before = usage_snapshot(llm_client.get_token_usage)
+            with st.spinner(f'選択肢名を提案しています（{len(unique_texts)}種類の回答）...'):
+                proposals = propose_choice_names(client, unique_texts, PROPOSAL_MODEL)
+            usage_after = usage_snapshot(llm_client.get_token_usage)
+            fx_rate = st.session_state.get('fx_rate', DEFAULT_FX_RATE)
+            st.session_state.setdefault('usage_log', []).append(
+                build_log_entry('RAWデータ補正: 選択肢名の提案', PROPOSAL_MODEL, usage_before, usage_after, fx_rate=fx_rate)
+            )
+            norm_lookup = {normalize_for_comparison(text): name for text, name in proposals.items()}
+            st.session_state['raw_correction_rows'] = [
+                {
+                    'row_id': r['row_id'], 'checked': False, 'source_answer': r['answer'],
+                    'new_name': norm_lookup.get(normalize_for_comparison(r['answer']), ''),
+                }
+                for r in source_rows
+            ]
+            st.rerun()
+        return
+
+    dest_labels = {e['id']: question_display_label(e) for e in dest_entries}
+    dest_ids = list(dest_labels.keys())
+    dest_id = st.selectbox(
+        '移動先設問（SA/MA）', dest_ids, format_func=lambda i: dest_labels[i], key='raw_correction_dest_id',
+    )
+    dest_entry = next(e for e in dest_entries if e['id'] == dest_id)
+    dest_col = entry_to_col.get(dest_entry['id'])
+    if dest_col is None:
+        st.warning('この設問に対応するRAW列が見つかりません（整合性チェックをご確認ください）。')
+        return
+
+    dest_option_texts = [o['text'] for o in dest_entry['options']]
+    replace_choice = st.selectbox(
+        '置き換える移動先の選択肢', ['新設', *dest_option_texts], key='raw_correction_replace_target',
+    )
+    replace_target = None if replace_choice == '新設' else replace_choice
+    is_multi = dest_entry['format'] == FORMAT_MA
+
+    dest_values = dict(zip(df['_row_id'], df[dest_col]))
+
+    table_rows = []
+    for r in working_rows:
+        dest_current = str(dest_values.get(r['row_id'], '') or '')
+        preview = (
+            compute_destination_preview(dest_current, r['new_name'], is_multi, replace_target)
+            if r['new_name'] else dest_current
+        )
+        warning = detect_similar_option(r['new_name'], dest_option_texts) if r['new_name'] else None
+        table_rows.append({
+            '確認': r['checked'], '回答ID': r['row_id'], '移動元設問の回答': r['source_answer'],
+            '新選択肢名案': r['new_name'], '移動先設問の回答': dest_current,
+            '追加・置き換え後の移動先の回答': preview, '注意コメント': warning or '',
+        })
+
+    edited = st.data_editor(
+        pd.DataFrame(table_rows), width='stretch', hide_index=True, key='raw_correction_editor',
+        disabled=['回答ID', '移動元設問の回答', '移動先設問の回答', '追加・置き換え後の移動先の回答', '注意コメント'],
+        column_config={
+            '確認': st.column_config.CheckboxColumn('確認'),
+            '新選択肢名案': st.column_config.TextColumn('新選択肢名案'),
+        },
+        # 確認・新選択肢名案にSelectboxColumnは使わない（同じ表の他の空欄セルが"None"と
+        # 表示されてしまう既知の不具合、2026-08-21確認済み）。
+    )
+    for i, row in edited.iterrows():
+        working_rows[i]['checked'] = bool(row['確認'])
+        working_rows[i]['new_name'] = str(row['新選択肢名案'] or '').strip()
+    st.session_state['raw_correction_rows'] = working_rows
+
+    handling_map = {'残す': 'keep', '削除': 'delete', '選択肢化済を付けて残す': 'mark'}
+    source_handling_label = st.selectbox(
+        '移動元のデータ処理（チェックした行のみに適用）', list(handling_map.keys()),
+        key='raw_correction_source_handling',
+    )
+
+    checked = [r for r in working_rows if r['checked'] and r['new_name']]
+    st.caption(f'チェック済み: {len(checked)}件')
+    if st.button('✅ この内容でRAWデータと設問定義の部分修正を行う', type='primary',
+                 key='raw_correction_execute', disabled=not checked):
+        row_new_names = {r['row_id']: r['new_name'] for r in checked}
+        rows = st.session_state['raw_rows']
+        registered = apply_correction(
+            rows, dest_col, source_col, row_new_names, is_multi, replace_target,
+            handling_map[source_handling_label],
+        )
+        st.session_state['raw_rows'] = rows
+        for name in registered:
+            add_option_to_entry(entries, dest_entry['id'], name)
+        st.session_state['question_definition'] = entries
+        st.session_state['raw_correction_rows'] = None
+        st.session_state['raw_correction_report'] = {
+            'count': len(checked), 'names': registered, 'dest_label': dest_labels[dest_id],
+        }
+        st.rerun()
+
+
 def _render_other_bucket_review(columns: list[str], df: pd.DataFrame, entries: list[dict]) -> None:
     """
     SA/MA設問のうち、選択肢一覧に無い値があるものを一覧表示し、対象設問として集計するときに
@@ -458,7 +631,7 @@ def _apply_native_other_processing(native_entries: list[dict], columns: list[str
 
 
 def _render_raw_data_check(columns: list[str], rows: list[dict], raw_filename: str, raw_encoding: str,
-                            excluded_row_ids: list[int]) -> None:
+                            excluded_row_ids: list[int], api_key: str) -> None:
     st.subheader('RAWデータ確認')
 
     report = st.session_state.pop('_native_other_processed_report', None)
@@ -503,6 +676,8 @@ def _render_raw_data_check(columns: list[str], rows: list[dict], raw_filename: s
             st.markdown('\n'.join(f'- {issue}' for issue in issues))
         _render_other_bucket_review(columns, df, entries)
         _render_other_text_extraction(columns, df, entries)
+        st.divider()
+        _render_raw_correction(columns, df, entries, api_key)
 
     st.divider()
     mojibake_candidates = find_mojibake_candidates(df[columns])

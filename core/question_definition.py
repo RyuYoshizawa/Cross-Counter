@@ -127,6 +127,29 @@ def add_manual_entry(entries: list[dict], question_text: str, format: str, short
     return updated
 
 
+def add_option_to_entry(entries: list[dict], entry_id: str, option_text: str) -> None:
+    """
+    既存entryのoptionsに新しい選択肢を追記する（entriesを直接書き換える）。RAWデータ補正機能
+    （アフターコーディング、core/raw_correction.py）が、FA回答から選択肢化した新しい選択肢名を
+    SA/MA設問の設問定義に登録するために使う——選択肢名・短縮選択肢名は同じ新しい選択肢名を
+    登録する（ユーザーとの合意事項、指示書⑬）。既に同じ選択肢テキストがあれば何もしない
+    （重複追加を防ぐ）。選択肢集合が変わるとマトリクス判定の結果も変わるため、呼び出し後に
+    必ず再計算する。
+    """
+    entry = next((e for e in entries if e['id'] == entry_id), None)
+    if entry is None:
+        return
+    if any(o['text'] == option_text for o in entry['options']):
+        return
+    entry['options'].append({'text': option_text, 'short': option_text})
+    # _assign_matrix_groups は連続する2件以上のグループにしかmatrixを書き込まない
+    # （対象外になった設問の古い値は自分では消さない）ため、_renumber_entriesと同様に
+    # 呼び出し前に全件リセットしておく必要がある。
+    for e in entries:
+        e['matrix'] = ''
+    _assign_matrix_groups(entries)
+
+
 def _renumber_entries(entries: list[dict]) -> None:
     """
     Q1/Q2/…の通し番号を振り直す。固定ID（Qn形式でない非空のID、例: 'time'）を持つ設問は
