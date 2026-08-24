@@ -294,3 +294,23 @@ def apply_correction(rows: list[dict], dest_col: str, source_col: str,
         # 'keep' はそのまま何もしない
 
     return registered
+
+
+def compute_followup_other_count(df: pd.DataFrame, followup_col: str, migrated_row_ids) -> int:
+    """
+    連動する別質問（followup_col、通常はFA設問）に非空回答があるのに、まだアフターコーディングで
+    移設されていない回答者数を数える（2026-08-24、ユーザーとの合意事項: 「その他（自由記述）」の
+    人数＝別質問の回答者数－移設済みの人数。主設問側の□その他チェックの有無は一切見ない）。
+
+    「現在dfに存在し、followup_colが非空のrow_id集合」から migrated_row_ids を単純に差し引く
+    だけの実装だが、移動元のデータ処理（残す/削除/選択肢化済、apply_correction参照）のどれを
+    選んでいても正しく動く: 「削除」を選んでいた場合は移設済み行のfollowup_colが既に空欄になって
+    おり非空集合に最初から含まれないため、migrated_row_idsとの差し引きは実質no-opだが結果は
+    正しいまま。「残す」「選択肢化済」の場合は非空集合に移設済み行も残ったままなので、
+    migrated_row_idsとの差分がそのまま「まだ移設していない人数」になる——どちらの運用でも
+    同じ関数で正しい結果になるのは、「移設した事実」をmigrated_row_idsとして別途記録している
+    ため（RAWセルの見た目の変化に依存しない）。
+    """
+    values = df[followup_col].astype(str).str.strip()
+    present_ids = set(df.loc[values != '', '_row_id'])
+    return len(present_ids - set(migrated_row_ids or []))

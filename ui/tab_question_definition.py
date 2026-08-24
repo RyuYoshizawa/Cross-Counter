@@ -534,6 +534,13 @@ def _render_raw_correction(columns: list[str], df: pd.DataFrame, entries: list[d
         st.session_state['raw_rows'] = rows
         for name in registered:
             add_option_to_entry(entries, dest_entry['id'], name)
+        # 「その他（自由記述）」の人数（GT集計）を、連動する移動元FA設問の未移設人数で計算する
+        # ための記録（2026-08-24、core.cross_execute._followup_other_count参照）。どの移動先に
+        # 移設したかは問わず、移動元FA設問側に移設済みrow_idを記録する。連動元は明示操作なしに
+        # 実際に移設操作を行うたびに上書きする（同じFA→SA/MA設問の組み合わせを繰り返し使う
+        # 実運用に合わせた設計）。
+        source_entry['migrated_row_ids'] = sorted(set(source_entry.get('migrated_row_ids', [])) | set(row_new_names))
+        dest_entry['other_followup_entry_id'] = source_entry['id']
         st.session_state['question_definition'] = entries
         st.session_state['raw_correction_rows'] = None
         st.session_state['raw_correction_report'] = {

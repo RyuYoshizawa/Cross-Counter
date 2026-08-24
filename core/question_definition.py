@@ -5,6 +5,14 @@ question_definition.py
 との相互変換を行う。match_to_raw_columns/build_consistency_issuesは、設問定義表とRAWデータの
 列見出しを突き合わせる（SPEC 5.2.3）。find_unmatched_value_entriesは列の中身（値そのもの）を
 突き合わせ、その他自動バケット化（各entryのother_bucketフィールド、SPEC 5.4.1）のレビューに使う。
+
+migrated_row_ids/other_followup_entry_id（2026-08-24）はRAWデータ補正機能
+（core/raw_correction.py）専用のフィールド。FA設問側のmigrated_row_idsは、その設問の自由記述が
+実際にアフターコーディングで移設済みの回答者_row_idを記録する。SA/MA設問側の
+other_followup_entry_idは、その設問の「その他自由記述」件数（GT集計）を計算する際に連動させる
+FA設問のidを指す——「主設問の□その他チェックと、別質問への自由記述回答が必ずしも1対1で
+対応しない」調査設計に対応するため、主設問自身のRAW値スキャンではなく連動する別質問の
+未移設人数で数える（core.cross_execute._followup_other_count参照）。
 """
 
 from __future__ import annotations
@@ -85,6 +93,8 @@ def build_entries(llm_questions: list[dict]) -> list[dict]:
             'matrix': '',
             'other_bucket': True,
             'has_native_other': has_native_other,
+            'migrated_row_ids': [],
+            'other_followup_entry_id': None,
         })
     _assign_matrix_groups(entries)
     return entries
@@ -116,6 +126,8 @@ def add_manual_entry(entries: list[dict], question_text: str, format: str, short
         'matrix': '',
         'other_bucket': True,
         'has_native_other': False,
+        'migrated_row_ids': [],
+        'other_followup_entry_id': None,
     }
     if index is not None:
         position = max(0, min(index, len(entries)))

@@ -33,6 +33,7 @@ from core.aggregate import (
 )
 from core.cross_plan import gridable_questions, question_label
 from core.question_definition import FORMAT_MA, match_to_raw_columns
+from core.raw_correction import compute_followup_other_count
 
 _TOTAL_LABEL = '全体'
 
@@ -53,6 +54,34 @@ def _option_texts_and_labels(entry: dict) -> tuple[list[str], list[str]]:
 def _target_other_label(entry: dict, labels: list[str]) -> str | None:
     """entryのother_bucket決定（タブ1で人が確定済み）に従って、使うべきその他ラベルを返す"""
     return resolve_other_label(labels) if entry.get('other_bucket', True) else None
+
+
+def _apply_followup_other_override(table: pd.DataFrame, target_entry: dict, target_other: str | None,
+                                    by_id: dict, entry_to_col: dict, df: pd.DataFrame, base: int) -> pd.DataFrame:
+    """
+    GT表の「その他」バケット行を、連動する別質問（other_followup_entry_id、
+    core.raw_correction参照）の未移設人数で上書きする（2026-08-24、ユーザーとの合意事項:
+    「□その他」チェックの有無と別質問への回答が必ずしも1対1で対応しない調査設計があるため、
+    主設問自身のRAW値スキャンではなく連動する別質問側で数える）。連動元が設定されていない・
+    対応するRAW列が見つからない・そもそもその他行が無い（other_bucket=False）場合は何もしない
+    ——現状GT（単純集計）のみ対応、クロス集計・トリプルクロス・一覧型クロスは対象外
+    （属性カテゴリごとの未移設人数という別概念が必要になるため、意図的にスコープ外）。
+    """
+    followup_id = target_entry.get('other_followup_entry_id')
+    if not target_other or not followup_id:
+        return table
+    followup_col = entry_to_col.get(followup_id)
+    followup_entry = by_id.get(followup_id)
+    if followup_col is None or followup_entry is None or followup_col not in df.columns:
+        return table
+    mask = table['選択肢'] == target_other
+    if not mask.any():
+        return table
+    count = compute_followup_other_count(df, followup_col, followup_entry.get('migrated_row_ids', []))
+    table = table.copy()
+    table.loc[mask, '度数'] = count
+    table.loc[mask, '%'] = round(count / base * 100, 1) if base else 0.0
+    return table
 
 
 def run_cross_plan(df: pd.DataFrame, entries: list[dict], columns: list[str],
@@ -89,6 +118,7 @@ def run_cross_plan(df: pd.DataFrame, entries: list[dict], columns: list[str],
                 if target_is_multi
                 else simple_tabulation_single(df[target_col], target_options, target_labels, other_label=target_other)
             )
+            table = _apply_followup_other_override(table, target_entry, target_other, by_id, entry_to_col, df, base)
             results.append({
                 'is_gt': True, 'attr_id': None, 'target_id': row['target'],
                 'attr_label': 'GT', 'target_label': row['target_label'], 'graph': row.get('graph', ''),
