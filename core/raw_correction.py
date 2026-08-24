@@ -14,6 +14,18 @@ FA（自由記述）設問の回答をAIの提案をもとに選択肢化し、�
 - 「削除」はRAWセルの値を実際に空文字列へ書き換える——このアプリの他機能が守ってきた
   「RAWデータは書き換えない」方針の唯一の例外だが、これは今回のユーザー指示そのものであり、
   人が個別にチェックした上での明示的な操作である点で自動処理とは性質が異なる。
+
+移動先設問の「その他」自動集計（SPEC 5.4.1、other_bucket/resolve_other_label、
+core/aggregate.py参照）との整合（2026-08-24、実際の運用で判明）: 選択肢一覧のどれにも
+一致しない値は、RAWセル自体は書き換えられずそのまま残り、集計実行時にだけ「その他」として
+まとめられる（core/aggregate.pyの計算上の扱いにすぎない）。そのため、この機能が本来の目的
+——一旦「その他」に丸められたデータを、新しい選択肢名で再分類する——を果たすには、
+移動先設問の回答（⑤）・置き換え対象（⑥）の両方で、この「その他」バケット化を集計と同じ
+ロジックで反映する必要がある。呼び出し側（ui/tab_question_definition.py）が
+core.aggregate.resolve_other_labelで「その他」バケットの表示名（実在の選択肢と衝突する場合は
+「その他（自由記述）」等に別名化——集計結果と食い違わないよう同じ関数をそのまま使う）を
+算出し、display_destination_value/compute_destination_preview（target_is_bucket引数）に
+渡す構成にしている。
 """
 
 from __future__ import annotations
@@ -143,15 +155,51 @@ def propose_choice_names(client, unique_texts: list[str], model: str = PROPOSAL_
     return result
 
 
+def display_destination_value(current_value, defined_options: list[str], is_multi: bool,
+                                other_bucket_label: str | None) -> str:
+    """
+    移動先設問の回答セルを、集計時の「その他」自動集計（other_bucket、core.aggregate参照）と
+    同じ見え方で表示する（⑤）。選択肢一覧のどれにも（正規化して）一致しない値をother_bucket_label
+    （resolve_other_labelで算出、Noneならバケット化しない設問）に置き換えて見せる——RAWセルの
+    実体は書き換えない、あくまで画面表示用の変換。実データで判明した実害への対応（2026-08-24）:
+    Googleフォーム標準の「その他」インライン自由記述のように、集計では「その他」としてまとめて
+    扱われる値が、この画面では未加工の自由記述テキストのまま表示され、再分類したい「その他」の
+    行が見分けられなかった。
+    """
+    current = str(current_value or '').strip()
+    if not current or not other_bucket_label:
+        return current
+    defined_norms = {normalize_for_comparison(o) for o in defined_options}
+    if not is_multi:
+        return other_bucket_label if normalize_for_comparison(current) not in defined_norms else current
+
+    parts = [p.strip() for p in current.split(_MULTI_DELIM)]
+    out_parts: list[str] = []
+    bucket_added = False
+    for part in parts:
+        if normalize_for_comparison(part) in defined_norms:
+            out_parts.append(part)
+        elif not bucket_added:
+            out_parts.append(other_bucket_label)
+            bucket_added = True
+        # 2つ目以降の未定義部分は同じバケット表示にまとめる（表示上重複させない）
+    return _MULTI_DELIM.join(out_parts)
+
+
 def compute_destination_preview(current_value, new_name: str, is_multi: bool,
-                                 replace_target: str | None) -> str:
+                                 replace_target: str | None, *,
+                                 target_is_bucket: bool = False,
+                                 defined_options: list[str] | None = None) -> str:
     """
     移動先設問の回答セルに新選択肢名を反映した結果を計算する（純粋関数、⑦）。
     SA: replace_targetの有無・一致に関わらず、常にnew_nameで上書きする（単一選択のセルは
     値を1つしか持てないため、「置き換え」も「新設」も結果は同じになる）。
-    MA: replace_targetが指定され、かつ現在値の中に（正規化して）一致する要素があれば、その
-    要素だけをnew_nameに置き換える。一致しない場合・replace_target未指定（新設）の場合は、
-    既に同じ値が無ければnew_nameを末尾に追加する。
+    MA: target_is_bucket=Trueの場合（⑥で「その他」バケット自体を置き換え対象に選んだ場合）、
+    定義済み選択肢のどれにも一致しない要素（＝集計時に「その他」としてまとめられる要素、
+    display_destination_valueと同じ判定）を1件だけnew_nameに置き換える（未定義要素が無ければ
+    末尾に追加）。target_is_bucket=Falseの場合は従来通り、replace_targetが指定され、かつ現在値の
+    中に（正規化して）一致する要素があれば、その要素だけをnew_nameに置き換える。一致しない場合・
+    replace_target未指定（新設）の場合は、既に同じ値が無ければnew_nameを末尾に追加する。
     """
     new_name = str(new_name or '').strip()
     if not is_multi:
@@ -160,7 +208,16 @@ def compute_destination_preview(current_value, new_name: str, is_multi: bool,
     current = str(current_value or '').strip()
     parts = [p.strip() for p in current.split(_MULTI_DELIM)] if current else []
 
-    if replace_target:
+    if target_is_bucket:
+        defined_norms = {normalize_for_comparison(o) for o in (defined_options or [])}
+        for i, part in enumerate(parts):
+            if normalize_for_comparison(part) not in defined_norms:
+                parts[i] = new_name
+                break
+        else:
+            if new_name not in parts:
+                parts.append(new_name)
+    elif replace_target:
         norm_target = normalize_for_comparison(replace_target)
         for i, part in enumerate(parts):
             if normalize_for_comparison(part) == norm_target:
@@ -196,13 +253,17 @@ def detect_similar_option(new_name: str, existing_options: list[str], threshold:
 
 def apply_correction(rows: list[dict], dest_col: str, source_col: str,
                       row_new_names: dict[int, str], is_multi: bool,
-                      replace_target: str | None, source_handling: str) -> list[str]:
+                      replace_target: str | None, source_handling: str, *,
+                      target_is_bucket: bool = False,
+                      defined_options: list[str] | None = None) -> list[str]:
     """
     チェック済み行の内容でRAWデータ（rows、st.session_state['raw_rows']と同じリスト）を
     その場で書き換える（other_text.pyと同じ「セッション状態のリストを直接書き換える」方式）。
     row_new_names: {回答ID(_row_id): 採用する新選択肢名}（チェック済み・新選択肢名が空でない
     行だけを呼び出し側で絞り込んで渡すこと）。
     source_handling: 'keep'（残す）/ 'delete'（削除）/ 'mark'（選択肢化済を付けて残す）。
+    target_is_bucket/defined_options: compute_destination_previewに同じ意味でそのまま渡す
+    （⑥で「その他」バケット自体を置き換え対象に選んだ場合）。
     戻り値: 実際に登録された新選択肢名（重複除去・出現順）——呼び出し側がcore.question_definition
     のadd_option_to_entryで設問定義に追加する。
     """
@@ -216,7 +277,10 @@ def apply_correction(rows: list[dict], dest_col: str, source_col: str,
             continue
 
         current = row.get(dest_col, '')
-        row[dest_col] = compute_destination_preview(current, new_name, is_multi, replace_target)
+        row[dest_col] = compute_destination_preview(
+            current, new_name, is_multi, replace_target,
+            target_is_bucket=target_is_bucket, defined_options=defined_options,
+        )
         if new_name not in seen:
             seen.add(new_name)
             registered.append(new_name)

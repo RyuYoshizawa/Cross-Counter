@@ -13,6 +13,7 @@ import pandas as pd
 import streamlit as st
 
 import llm_client
+from core.aggregate import resolve_other_label
 from core.cleaning import find_mojibake_candidates
 from core.cross_plan import gridable_questions, question_display_label
 from core.form_html import SHORT_LABEL_MODEL, parse_form_html, propose_short_labels
@@ -39,6 +40,7 @@ from core.raw_correction import (
     build_source_rows,
     compute_destination_preview,
     detect_similar_option,
+    display_destination_value,
     fa_source_entries,
     propose_choice_names,
     unique_answers_for_proposal,
@@ -455,7 +457,12 @@ def _render_raw_correction(columns: list[str], df: pd.DataFrame, entries: list[d
         return
 
     dest_option_texts = [o['text'] for o in dest_entry['options']]
-    replace_choices = ['新設', *dest_option_texts]
+    # 集計時の「その他」自動集計（other_bucket、core.aggregate.resolve_other_label）と同じ
+    # 表示名を使う——選択肢一覧に無い値は、RAWセルは書き換えられないまま集計時だけ「その他」に
+    # まとめられるため、この画面でも同じ扱いで見せないと「一旦その他になったデータを
+    # 選び直して再分類する」という本来の目的を果たせない（実運用で判明、2026-08-24）。
+    other_bucket_label = resolve_other_label(dest_option_texts) if dest_entry.get('other_bucket', True) else None
+    replace_choices = ['新設', *([other_bucket_label] if other_bucket_label else []), *dest_option_texts]
     if st.session_state.get('raw_correction_replace_target') not in replace_choices:
         # 移動先設問を切り替えると選択肢一覧も変わるため、前の設問の選択肢が残っていると
         # st.selectboxがStreamlitAPIExceptionになる（移動先設問を選び直せなくなる実害があった）。
@@ -464,21 +471,26 @@ def _render_raw_correction(columns: list[str], df: pd.DataFrame, entries: list[d
         '置き換える移動先の選択肢', replace_choices, key='raw_correction_replace_target',
     )
     replace_target = None if replace_choice == '新設' else replace_choice
+    target_is_bucket = other_bucket_label is not None and replace_choice == other_bucket_label
     is_multi = dest_entry['format'] == FORMAT_MA
 
     dest_values = dict(zip(df['_row_id'], df[dest_col]))
 
     table_rows = []
     for r in working_rows:
-        dest_current = str(dest_values.get(r['row_id'], '') or '')
+        dest_raw = str(dest_values.get(r['row_id'], '') or '')
+        dest_display = display_destination_value(dest_raw, dest_option_texts, is_multi, other_bucket_label)
         preview = (
-            compute_destination_preview(dest_current, r['new_name'], is_multi, replace_target)
-            if r['new_name'] else dest_current
+            compute_destination_preview(
+                dest_raw, r['new_name'], is_multi, replace_target,
+                target_is_bucket=target_is_bucket, defined_options=dest_option_texts,
+            )
+            if r['new_name'] else dest_raw
         )
         warning = detect_similar_option(r['new_name'], dest_option_texts) if r['new_name'] else None
         table_rows.append({
             '確認': r['checked'], '回答ID': r['row_id'], '移動元設問の回答': r['source_answer'],
-            '新選択肢名案': r['new_name'], '移動先設問の回答': dest_current,
+            '新選択肢名案': r['new_name'], '移動先設問の回答': dest_display,
             '追加・置き換え後の移動先の回答': preview, '注意コメント': warning or '',
         })
 
@@ -512,6 +524,7 @@ def _render_raw_correction(columns: list[str], df: pd.DataFrame, entries: list[d
         registered = apply_correction(
             rows, dest_col, source_col, row_new_names, is_multi, replace_target,
             handling_map[source_handling_label],
+            target_is_bucket=target_is_bucket, defined_options=dest_option_texts,
         )
         st.session_state['raw_rows'] = rows
         for name in registered:
