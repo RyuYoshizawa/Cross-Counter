@@ -13,7 +13,7 @@ import pandas as pd
 import streamlit as st
 
 import llm_client
-from core.cleaning import find_mojibake_candidates
+from core.cleaning import find_blank_response_candidates, find_missing_required_candidates, find_mojibake_candidates
 from core.cross_plan import gridable_questions, question_label
 from core.form_html import SHORT_LABEL_MODEL, parse_form_html, propose_short_labels
 from core.form_pdf import extract_pdf_text, propose_question_definitions
@@ -646,6 +646,8 @@ def _render_raw_data_check(columns: list[str], rows: list[dict], raw_filename: s
 
     st.divider()
     mojibake_candidates = find_mojibake_candidates(df[columns])
+    blank_candidates = find_blank_response_candidates(df[columns])
+    required_candidates = find_missing_required_candidates(entries, columns, df)
 
     st.markdown('##### テスト回答削除')
     st.caption(
@@ -675,10 +677,48 @@ def _render_raw_data_check(columns: list[str], rows: list[dict], raw_filename: s
             st.checkbox(label, value=True, key=f'mojibake_excl_{row_id}')
 
     st.divider()
+    st.markdown('##### 空欄提出候補')
+    if not blank_candidates:
+        st.caption('実質的に何も回答していない行（空欄提出）は見つかりませんでした。')
+    else:
+        st.caption(
+            f'{len(blank_candidates)}件の行で、ほぼ全ての設問が空欄のまま提出されているのが'
+            '見つかりました（タイムスタンプ等、フォームが自動で埋める列以外に回答が無い行）。'
+            'このような行は分岐の無いあらゆる集計表に同じ「未回答」件数として現れます。'
+            '除外する行のチェックを確認してください（初期状態は全てチェック済み＝除外）。'
+        )
+        for row_id in blank_candidates:
+            answered = {
+                col: str(df.at[row_id, col]) for col in columns
+                if str(df.at[row_id, col]).strip() != ''
+            }
+            preview = '、'.join(f'{k}={v}' for k, v in answered.items()) or '（全設問が空欄）'
+            st.checkbox(f'行{row_id}（{preview}）', value=True, key=f'blank_excl_{row_id}')
+
+    st.divider()
+    st.markdown('##### 必須未回答候補')
+    if not required_candidates:
+        st.caption('必須設問が未回答の行は見つかりませんでした。')
+    else:
+        st.caption(
+            f'{len(required_candidates)}件の行で、必須設問への回答が抜けているのが見つかりました。'
+            '除外する行のチェックを確認してください（初期状態は全てチェック済み＝除外）。'
+        )
+        for row_id, labels in required_candidates.items():
+            label = f'行{row_id}（未回答の必須設問: {"、".join(labels)}）'
+            st.checkbox(label, value=True, key=f'required_excl_{row_id}')
+
+    st.divider()
     if st.button('✅ この内容で除外行を確定する', type='primary', key='confirm_exclusions'):
         excluded = set(test_selected_row_ids)
         for row_id in mojibake_candidates:
             if st.session_state.get(f'mojibake_excl_{row_id}', True):
+                excluded.add(row_id)
+        for row_id in blank_candidates:
+            if st.session_state.get(f'blank_excl_{row_id}', True):
+                excluded.add(row_id)
+        for row_id in required_candidates:
+            if st.session_state.get(f'required_excl_{row_id}', True):
                 excluded.add(row_id)
         st.session_state['excluded_row_ids'] = sorted(excluded)
         st.rerun()
