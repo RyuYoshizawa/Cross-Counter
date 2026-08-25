@@ -176,6 +176,63 @@ def _render_manual_entry_form(entries: list[dict]) -> None:
             st.rerun()
 
 
+def _preceding_gridable(entries: list[dict], target_id: str) -> dict | None:
+    """
+    target_idの設問より前にある直近のSA/MA設問を返す（前提条件のゲート設問の既定候補）。
+    分岐の説明文言（n_note）はほぼ必ず「前の設問」「直前の設問」を指すため、この既定値を
+    出発点にすれば人が選び直す手間がほとんどのケースで不要になる。
+    """
+    idx = next((i for i, e in enumerate(entries) if e['id'] == target_id), None)
+    if idx is None:
+        return None
+    for e in reversed(entries[:idx]):
+        if e['format'] in (FORMAT_SA, FORMAT_MA):
+            return e
+    return None
+
+
+def _render_condition_editor(entry: dict, entries: list[dict], gate_candidates: list[dict],
+                              label_by_id: dict[str, str], key_prefix: str,
+                              default_on: bool = False) -> None:
+    """
+    entry1件分の前提条件チェックボックス＋ゲート設問・対象値の選択UI。entryを直接書き換える。
+    """
+    is_on = st.checkbox(
+        '母数・未回答・％の計算に反映する', value=default_on, key=f'{key_prefix}_on_{entry["id"]}',
+    )
+    if not is_on:
+        entry['condition_entry_id'] = None
+        entry['condition_values'] = []
+        return
+
+    gate_pool = [e for e in gate_candidates if e['id'] != entry['id']]
+    if not gate_pool:
+        st.caption('前提条件に使えるSA/MA設問がありません。')
+        entry['condition_entry_id'] = None
+        entry['condition_values'] = []
+        return
+
+    gate_keys = {f'{e["id"]}: {label_by_id[e["id"]]}': e for e in gate_pool}
+    keys_list = list(gate_keys.keys())
+    default_gate_id = entry.get('condition_entry_id') or (_preceding_gridable(entries, entry['id']) or {}).get('id')
+    default_key = next((k for k, e in gate_keys.items() if e['id'] == default_gate_id), None)
+    gate_key = st.selectbox(
+        '前提条件となる設問（既定は直前の設問）', keys_list,
+        index=keys_list.index(default_key) if default_key else 0, key=f'{key_prefix}_gate_{entry["id"]}',
+    )
+    gate_entry = gate_keys[gate_key]
+
+    option_texts = [o['text'] for o in gate_entry['options']]
+    default_values = entry.get('condition_values', []) if entry.get('condition_entry_id') == gate_entry['id'] else []
+    selected_values = st.multiselect(
+        '対象とする回答（複数選択可）', option_texts, default=default_values, key=f'{key_prefix}_values_{entry["id"]}',
+    )
+    entry['condition_entry_id'] = gate_entry['id'] if selected_values else None
+    entry['condition_values'] = selected_values
+    if not selected_values:
+        st.caption('対象とする回答を1つ以上選ぶと反映されます。')
+
+
 def _render_condition_review(entries: list[dict]) -> None:
     """
     分岐（スキップロジック）がある設問向けの前提条件設定（SPEC 5.4.3、2026-08-25）。
@@ -186,6 +243,15 @@ def _render_condition_review(entries: list[dict]) -> None:
     関わらず対象外、other_bucket等と同じ扱い）。前提条件となる設問自身がさらに前提条件を
     持っていても、RAWデータ上は「対象外の回答者は前提設問のセルも空欄のまま」になるため、
     直接の前提設問1段だけを見れば連鎖的な分岐も自動的に正しく絞り込める（再帰的な解決は不要）。
+
+    **n変化列との連携（2026-08-25、ユーザーとの合意事項）**: 分岐箇所はフォームPDF/HTML
+    解析の時点でn_note（表の「n変化」列、フォームのセクション説明文言から拾った自由記述の
+    メモ）に既に記録されていることが多い。ただしn_noteは自由記述で、どの設問のどの回答値が
+    条件かを機械的に確定はできない（表現のブレがあり誤判定の方が実害が大きい）ため、対象の
+    回答値そのものは人に選んでもらう必要がある。その代わり、n_noteがある設問だけを対象一覧に
+    絞り込み、ゲート設問は「直前の設問」を既定選択にしておくことで、チェックを入れて対象の
+    回答を選ぶだけで済むようにし、全設問からの検索・選択の手間を無くした。n_noteが無い設問
+    向けの詳細設定は下の折りたたみに残す。
     """
     gate_candidates = gridable_questions(entries)
     if len(gate_candidates) < 1:
@@ -193,48 +259,51 @@ def _render_condition_review(entries: list[dict]) -> None:
 
     st.markdown('##### 前提条件（分岐条件）の設定')
     st.caption(
-        '分岐（スキップロジック）で対象者が絞られる設問は、前の設問の回答で対象者を絞ってから'
-        '母数・未回答・％を計算できます。未設定の設問は今まで通り全回答者を対象に計算します。'
+        '「n変化」列にメモがある設問（分岐で対象者が絞られる設問）です。チェックを入れて対象の'
+        '回答を選ぶと、母数・未回答・％をその条件を満たす回答者だけで計算します（未チェックの'
+        '設問は今まで通り全回答者を対象に計算します）。前提となる設問は既定で直前の設問を選んで'
+        'いますが、違う場合は選び直せます。'
     )
 
     label_by_id = {e['id']: question_label(e) for e in entries}
-    configured = [e for e in entries if e.get('condition_entry_id')]
-    if configured:
-        for entry in configured:
-            gate_label = label_by_id.get(entry['condition_entry_id'], '（対応する設問なし）')
-            values = '、'.join(entry.get('condition_values', []))
-            col1, col2 = st.columns([6, 1])
-            with col1:
-                st.write(f'- 「{label_by_id[entry["id"]]}」は「{gate_label}」が「{values}」の場合のみ対象')
-            with col2:
-                if st.button('解除', key=f'condition_clear_{entry["id"]}'):
-                    entry['condition_entry_id'] = None
-                    entry['condition_values'] = []
-                    st.rerun()
+    noted_entries = [e for e in entries if e.get('n_note', '').strip()]
+    if not noted_entries:
+        st.caption('「n変化」列にメモがある設問はありません。')
+    for entry in noted_entries:
+        with st.container(border=True):
+            st.write(f'**{label_by_id[entry["id"]]}**')
+            st.caption(f'n変化のメモ: {entry["n_note"]}')
+            _render_condition_editor(
+                entry, entries, gate_candidates, label_by_id, key_prefix='condition_noted',
+                default_on=bool(entry.get('condition_entry_id')),
+            )
 
-    with st.expander('➕ 前提条件を設定する', expanded=False):
+    other_configured = [
+        e for e in entries if e.get('condition_entry_id') and not e.get('n_note', '').strip()
+    ]
+    with st.expander('➕ n変化にメモが無い設問にも前提条件を設定する（詳細設定）', expanded=bool(other_configured)):
+        if other_configured:
+            st.caption('この詳細設定で設定済み:')
+            for entry in other_configured:
+                gate_label = label_by_id.get(entry['condition_entry_id'], '（対応する設問なし）')
+                values = '、'.join(entry.get('condition_values', []))
+                col1, col2 = st.columns([6, 1])
+                with col1:
+                    st.write(f'- 「{label_by_id[entry["id"]]}」は「{gate_label}」が「{values}」の場合のみ対象')
+                with col2:
+                    if st.button('解除', key=f'condition_manual_clear_{entry["id"]}'):
+                        entry['condition_entry_id'] = None
+                        entry['condition_values'] = []
+                        st.rerun()
+            st.divider()
+
         target_options = {f'{e["id"]}: {label_by_id[e["id"]]}': e['id'] for e in entries}
         target_key = st.selectbox('対象設問（この条件を適用する設問）', list(target_options.keys()), key='condition_target_select')
-        target_id = target_options[target_key]
-
-        gate_options = {f'{e["id"]}: {label_by_id[e["id"]]}': e for e in gate_candidates if e['id'] != target_id}
-        if not gate_options:
-            st.caption('前提条件に使えるSA/MA設問がありません。')
-            return
-        gate_key = st.selectbox('前提条件となる設問（SA/MAのみ）', list(gate_options.keys()), key='condition_gate_select')
-        gate_entry = gate_options[gate_key]
-
-        option_texts = [o['text'] for o in gate_entry['options']]
-        selected_values = st.multiselect('対象とする回答（複数選択可）', option_texts, key='condition_values_select')
-
-        if st.button('この条件を設定する', key='condition_set_button'):
-            if not selected_values:
-                st.warning('対象とする回答を1つ以上選んでください。')
-            else:
-                target_entry = next(e for e in entries if e['id'] == target_id)
-                target_entry['condition_entry_id'] = gate_entry['id']
-                target_entry['condition_values'] = selected_values
-                st.rerun()
+        target_entry = next(e for e in entries if e['id'] == target_options[target_key])
+        _render_condition_editor(
+            target_entry, entries, gate_candidates, label_by_id, key_prefix='condition_manual',
+            default_on=bool(target_entry.get('condition_entry_id')),
+        )
 
 
 def _render_import(api_key: str) -> None:
