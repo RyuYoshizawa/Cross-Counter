@@ -11,12 +11,20 @@ cross_execute.py
 **その他自由記述の自動バケット化（SPEC 5.4.1）**: 対象設問（GT行・クロスの対象側・
 トリプルクロスの対象側）の選択肢一覧に無い値を自動的に「その他」としてまとめて集計に含める
 かどうかは、各設問定義エントリのother_bucketフィールド（bool、既定True）で決まる——タブ1
-「RAWデータ確認」で人が実データを見て一度だけ確定する決定であり、ここでは単にその値を
-読むだけで、RAWデータを再スキャンして警告を組み立てるようなことはしない（当初はここで
-毎回find_unmatched_valuesを再実行し警告文を作っていたが、実際には集計できているのに
-「一部の集計をスキップしました」という警告と紛らわしく表示されてしまう問題があり、
-決定をタブ1側に一本化した、ユーザーとの合意事項 2026-08-22）。属性側は対象外——属性の
-その他バケット化は現状の要望に含まれないため実装していない。
+「RAWデータ確認」で人が実データを見て一度だけ確定する決定であり、警告文を組み立てるために
+RAWデータを再スキャンするようなことはしない（当初はここで毎回find_unmatched_valuesを
+再実行し警告文を作っていたが、実際には集計できているのに「一部の集計をスキップしました」
+という警告と紛らわしく表示されてしまう問題があり、警告の要否の決定をタブ1側に一本化した、
+ユーザーとの合意事項 2026-08-22）。
+
+ただし、other_bucket=True（既定値）でもその設問の実データに未対応の値が1件も無ければ、
+「その他」列は常に0件のまま集計表に残り続け、紛らわしい空列になる（実データで発生、
+2026-08-25）。other_bucketは「一度でも未対応の値が見つかった設問」だけがタブ1のレビューUIに
+出てくる仕組みのため、未対応の値が最初から存在しない設問ではフラグがTrueのまま一切見直されない
+——これは前段落の「警告文のための再スキャン」とは別の話で、警告は一切出さず、対象設問の
+実データにfind_unmatched_valuesで実在する未対応の値が無ければその他バケット自体を作らない
+（列を静かに省く）だけの軽い事前チェックとして_target_other_label内で行う。属性側は対象外
+——属性のその他バケット化は現状の要望に含まれないため実装していない。
 """
 
 from __future__ import annotations
@@ -26,6 +34,7 @@ import pandas as pd
 from core.aggregate import (
     compute_base_count,
     cross_tabulation,
+    find_unmatched_values,
     resolve_other_label,
     simple_tabulation_multi,
     simple_tabulation_single,
@@ -51,9 +60,20 @@ def _option_texts_and_labels(entry: dict) -> tuple[list[str], list[str]]:
     return options, labels
 
 
-def _target_other_label(entry: dict, labels: list[str]) -> str | None:
-    """entryのother_bucket決定（タブ1で人が確定済み）に従って、使うべきその他ラベルを返す"""
-    return resolve_other_label(labels) if entry.get('other_bucket', True) else None
+def _target_other_label(entry: dict, labels: list[str], series: pd.Series,
+                         options: list[str], is_multi: bool) -> str | None:
+    """
+    entryのother_bucket決定（タブ1で人が確定済み）に従って、使うべきその他ラベルを返す。
+    other_bucket=Trueでも、この設問の実データに選択肢一覧と対応しない値が1件も無ければ
+    常に0件の紛らわしい列になるため、その場合はNoneを返してバケット自体を作らない
+    （find_unmatched_valuesで実在するかどうかだけを見る軽い事前チェック——警告文は出さない、
+    ファイル冒頭のdocstring参照）。
+    """
+    if not entry.get('other_bucket', True):
+        return None
+    if not find_unmatched_values(series, options, is_multi):
+        return None
+    return resolve_other_label(labels)
 
 
 def run_cross_plan(df: pd.DataFrame, entries: list[dict], columns: list[str],
@@ -85,7 +105,8 @@ def run_cross_plan(df: pd.DataFrame, entries: list[dict], columns: list[str],
             continue
         target_options, target_labels = _option_texts_and_labels(target_entry)
         target_is_multi = target_entry['format'] == FORMAT_MA
-        target_other = _target_other_label(target_entry, target_labels)
+        target_other = _target_other_label(target_entry, target_labels, df[target_col],
+                                            target_options, target_is_multi)
 
         if row['attr'] is None:
             base = compute_base_count(df[target_col])
@@ -169,7 +190,8 @@ def run_triple_cross(df: pd.DataFrame, entries: list[dict], columns: list[str],
         mid_options, mid_labels = _option_texts_and_labels(mid_entry)
         target_options, target_labels = _option_texts_and_labels(target_entry)
         target_is_multi = target_entry['format'] == FORMAT_MA
-        target_other = _target_other_label(target_entry, target_labels)
+        target_other = _target_other_label(target_entry, target_labels, df[target_col],
+                                            target_options, target_is_multi)
 
         cross = triple_cross_tabulation(
             df,
@@ -236,7 +258,8 @@ def run_list_cross(df: pd.DataFrame, entries: list[dict], columns: list[str],
             continue
         target_options, target_labels = _option_texts_and_labels(target_entry)
         target_is_multi = target_entry['format'] == FORMAT_MA
-        target_other = _target_other_label(target_entry, target_labels)
+        target_other = _target_other_label(target_entry, target_labels, df[target_col],
+                                            target_options, target_is_multi)
         all_target_labels = [*target_labels, target_other] if target_other else list(target_labels)
 
         attrs: list[dict] = []
