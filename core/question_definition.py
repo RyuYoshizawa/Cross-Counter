@@ -9,11 +9,16 @@ question_definition.py
 前提条件（SPEC 5.4.3、この設問を対象設問として集計する場合のみ効く——属性として使う場合は
 他のバケット化系フラグ同様に対象外）。設定・編集はui/tab_question_definition.pyが行い、
 実際にRAWデータへ適用するのはcore/cross_execute.py。
+build_legacy_definition_rows/build_legacy_definition_csvは、編集中の設問定義から旧型の
+設問定義書フォーマット（データ抽出タブ「旧設問定義書を出力」、ユーザー提示のサンプルCSVに
+準拠）を書き出す。
 """
 
 from __future__ import annotations
 
+import csv
 import difflib
+import io
 import re
 
 import pandas as pd
@@ -351,3 +356,33 @@ def find_unmatched_value_entries(entries: list[dict], columns: list[str], df: pd
         if unmatched:
             result.append({'entry': entry, 'unmatched': unmatched})
     return result
+
+
+def build_legacy_definition_rows(entries: list[dict]) -> list[list]:
+    """
+    旧型の設問定義書フォーマット（ヘッダー行なし・1行1設問）へ変換する。列構成（ユーザー
+    提示のサンプルCSVに準拠、2026-08-25）: ID・設問ラベル・形式、SA/MAのみ選択肢数に続けて
+    (番号, 選択肢ラベル) を選択肢の数だけ繰り返す。設問ラベル・選択肢ラベルは短縮版があれば
+    それを使い、無ければ原文を使う（question_label/_option_texts_and_labelsと同じ「短縮優先」
+    パターン）——「必」「設問文」「選択肢」（原文）「matrix」「n変化」は旧フォーマットに
+    存在しないため使わない（ユーザーとの合意事項）。matrix候補であっても1設問1行のまま
+    まとめない（旧フォーマット自体にグループ化の概念が無いため）。
+    """
+    rows: list[list] = []
+    for entry in entries:
+        label = entry['short_question'] or entry['question_text']
+        row: list = [entry['id'], label, entry['format']]
+        if entry['format'] in (FORMAT_SA, FORMAT_MA):
+            row.append(len(entry['options']))
+            for i, opt in enumerate(entry['options'], 1):
+                row.append(i)
+                row.append(opt['short'] or opt['text'])
+        rows.append(row)
+    return rows
+
+
+def build_legacy_definition_csv(entries: list[dict]) -> str:
+    """build_legacy_definition_rowsの結果をCSVテキスト（ヘッダー行なし）に変換する。"""
+    buf = io.StringIO()
+    csv.writer(buf).writerows(build_legacy_definition_rows(entries))
+    return buf.getvalue()

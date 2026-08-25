@@ -3,6 +3,9 @@ tab_data_export.py
 第6タブ「データ抽出」。最初の機能「設問指定RAWデータ出力」——指定した設問だけを選んで、
 列見出し（短縮設問文/原文設問文）・選択肢型設問の値（短縮選択肢/原文選択肢）を設問ごとに
 切り替えてRAWデータをCSVとして書き出す（ユーザーとの合意事項、2026-08-23）。
+2つ目の機能「旧設問定義書を出力」——編集中の設問定義から旧型の設問定義書フォーマットの
+CSVを書き出す（ユーザーとの合意事項、2026-08-25）。RAWデータが無くても設問定義さえあれば
+使えるため、RAWデータ有無のチェックより前に置く。
 """
 
 from __future__ import annotations
@@ -12,7 +15,7 @@ import streamlit as st
 
 from core.cross_plan import format_suffix, question_label
 from core.data_export import build_export_dataframe
-from core.question_definition import FORMAT_MA, FORMAT_SA
+from core.question_definition import FORMAT_MA, FORMAT_SA, build_legacy_definition_csv
 
 _MAX_ROWS = 12
 _UNSELECTED = ''
@@ -21,14 +24,33 @@ _UNSELECTED = ''
 def render(columns: list[str], rows: list[dict], excluded_row_ids: list[int], entries: list[dict]) -> None:
     st.subheader('データ抽出')
 
-    if not rows:
-        st.info('サイドバーからRAWファイルを読み込んでください。')
-        return
     if not entries:
         st.info('先に「設問定義・RAWデータ確認」タブで設問定義表を作成してください。')
         return
 
+    _render_legacy_definition_export(entries)
+    st.divider()
+
+    if not rows:
+        st.info('サイドバーからRAWファイルを読み込んでください。')
+        return
+
     _render_question_export(columns, rows, excluded_row_ids, entries)
+
+
+def _render_legacy_definition_export(entries: list[dict]) -> None:
+    st.markdown('##### 旧設問定義書を出力')
+    st.caption(
+        '編集中の設問定義から、旧型の設問定義書フォーマット（ヘッダー行なし、1行1設問: ID・'
+        '設問文・形式・選択肢数・番号と選択肢の繰り返し）のCSVを書き出します。設問文・選択肢は'
+        '短縮版があればそれを、無ければ原文を使います（「必」「n変化」「matrix」列と原文の'
+        '設問文・選択肢は旧フォーマットに存在しないため使いません）。'
+    )
+    csv_text = build_legacy_definition_csv(entries)
+    st.download_button(
+        '📥 旧設問定義書を出力する', data=csv_text.encode('utf-8-sig'),
+        file_name='旧設問定義書.csv', mime='text/csv', key='legacy_definition_download', width='stretch',
+    )
 
 
 def _render_question_export(columns: list[str], rows: list[dict], excluded_row_ids: list[int],
