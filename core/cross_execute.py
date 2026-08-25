@@ -26,17 +26,29 @@ RAWデータを再スキャンするようなことはしない（当初はこ�
 （列を静かに省く）だけの軽い事前チェックとして_target_other_label内で行う。属性側は対象外
 ——属性のその他バケット化は現状の要望に含まれないため実装していない。
 
-**設問の前提条件（分岐条件、SPEC 5.4.3、実装済み2026-08-25）**: 分岐（スキップロジック）が
-ある調査では、対象外の回答者のRAWセルが空欄になり、単純に「全サンプル数−有効回答数」で
-未回答を数えると「そもそも聞かれなかった人」まで未回答に含めてしまい、必須設問でも大量の
-未回答が出る異常値になる実害があった（ユーザー提示の実データで確認：必須のMA設問で
-本来ゼロのはずの未回答が1503件になっていた）。各設問定義エントリのcondition_entry_id/
-condition_valuesフィールド（タブ1で設定）に「この設問は〈設問X〉が〈値〉の回答者のみ対象」
-という前提条件を持たせ、対象設問として集計する際（GT・クロス対象側・トリプルクロス対象側・
-一覧型クロス対象側のみ——属性側は対象外、other_bucket等と同じ扱い）、_apply_conditionで
-その条件を満たす行だけに絞ったdfを使って母数・未回答・％を計算する。前提設問自身がさらに
-前提条件を持っていても、対象外の回答者は前提設問のセルも空欄のままRAWに残るため、直接の
-前提設問1段だけを見れば連鎖的な分岐も自動的に正しく絞り込める（再帰的な条件解決は不要）。
+**設問の前提条件（分岐条件、SPEC 5.4.3、2026-08-25、同日中に「未回答」廃止に伴い設計変更）**:
+分岐（スキップロジック）がある調査では、対象外の回答者のRAWセルが空欄になる。母数（base）は
+元々「セルに何らかの回答があった数」だけで決まるため、この空欄は自動的に母数からもれなく
+除外され、実は前提条件を知らなくても母数・各選択肢の％は最初から正しい（compute_base_countは
+dfを絞り込んでも絞り込まなくても同じ値になる——空欄セルはどちらにしても数えられないため）。
+前提条件が要るのは「本来の対象者数に対してどれだけ回答が集まったか（回答率）」を示したい
+場合と、「この設問には対象者を絞る条件がある」という事実そのものを表示したい場合の2つだけ。
+各設問定義エントリのcondition_entry_id/condition_valuesフィールド（タブ1で設定）に「この設問は
+〈設問X〉が〈値〉の回答者のみ対象」という前提条件を持たせ、対象設問として集計する際（GT・
+クロス対象側・トリプルクロス対象側・一覧型クロス対象側のみ——属性側は対象外、other_bucket等と
+同じ扱い）、_eligible_totalがその条件を満たす行数（＝回答率の分母）を数え、_condition_labelが
+設問定義からそのまま「回答条件あり: 〜」という表示文字列を組み立てる。どちらも実際の集計
+（cross_tabulation等）にはdfをそのまま渡す——前提条件によるdfの絞り込みは行わない（絞り込んでも
+母数・％の値は変わらないため、そのための複雑さを持つ理由が無い。以前はここでdfを絞り込んで
+から集計関数に渡していたが、「未回答」という擬似カテゴリ行/列を正しく計算するためだけに
+必要だった処理で、それ自体を廃止したため不要になった）。
+
+**「未回答」の廃止（2026-08-25、同日中の設計変更）**: 以前はcore.aggregateのcross_tabulation/
+triple_cross_tabulationが「未回答」という擬似カテゴリ行/列を持ち、母数に含まれない未回答の
+件数を「全体」の直前に表示していたが、未回答の％だけ他の選択肢と異なる分母（母数＋未回答）に
+なる複雑さの割に実益が薄いと判断し廃止した（ユーザーとの合意事項）。代わりに、この
+モジュールが「回答条件あり」表示と「回答率」計算を提供する——本来の対象者数を知りたい場合は
+これらを使う。
 """
 
 from __future__ import annotations
@@ -57,7 +69,6 @@ from core.cross_plan import gridable_questions, question_label
 from core.question_definition import FORMAT_MA, match_to_raw_columns
 
 _TOTAL_LABEL = '全体'
-_UNANSWERED_LABEL = '未回答'
 
 
 def _entry_to_raw_column(entries: list[dict], columns: list[str]) -> dict[str, str]:
@@ -89,26 +100,41 @@ def _target_other_label(entry: dict, labels: list[str], series: pd.Series,
     return resolve_other_label(labels)
 
 
-def _apply_condition(df: pd.DataFrame, target_entry: dict, by_id: dict[str, dict],
-                      entry_to_col: dict[str, str]) -> tuple[pd.DataFrame, str | None]:
+def _eligible_total(df: pd.DataFrame, target_entry: dict, by_id: dict[str, dict],
+                     entry_to_col: dict[str, str]) -> tuple[int, str | None]:
     """
-    target_entryに前提条件（condition_entry_id/condition_values）が設定されていれば、
-    その条件を満たす行だけに絞ったdfを返す（分岐条件フィルタ、SPEC 5.4.3）。未設定なら
-    dfをそのまま返す。前提設問のRAW列が見つからない等で適用できない場合は、絞り込まずdfを
-    そのまま返し、理由をissueとして返す（戻り値の2つ目、問題なければNone）。
+    target_entryに前提条件（condition_entry_id/condition_values）が設定されていれば、その
+    条件を満たす行数（＝回答率の分母となる、本来の対象者数）を返す。未設定なら全回答者数
+    （len(df)）を返す。前提設問のRAW列が見つからない等で判定できない場合は全回答者数を返し、
+    理由をissueとして返す（戻り値の2つ目、問題なければNone）。
     """
     condition_id = target_entry.get('condition_entry_id')
     condition_values = target_entry.get('condition_values') or []
     if not condition_id or not condition_values:
-        return df, None
+        return len(df), None
     condition_entry = by_id.get(condition_id)
     condition_col = entry_to_col.get(condition_id) if condition_entry else None
     if condition_entry is None or condition_col is None:
         label = target_entry.get('short_question') or target_entry.get('question_text')
-        return df, f'「{label}」の前提条件設問に対応するRAW列が見つからないため、前提条件を適用せず全回答者を対象に集計しました。'
+        return len(df), f'「{label}」の前提条件設問に対応するRAW列が見つからないため、対象者数は全回答者数を使いました。'
     is_multi = condition_entry['format'] == FORMAT_MA
     mask = series_matches_any(df[condition_col], condition_values, is_multi)
-    return df[mask], None
+    return int(mask.sum()), None
+
+
+def _condition_label(target_entry: dict, by_id: dict[str, dict]) -> str | None:
+    """
+    target_entryに前提条件が設定されていれば、設問定義からそのまま「回答条件あり: 〜」の
+    表示文字列を組み立てて返す。未設定ならNone。
+    """
+    condition_id = target_entry.get('condition_entry_id')
+    condition_values = target_entry.get('condition_values') or []
+    if not condition_id or not condition_values:
+        return None
+    gate_entry = by_id.get(condition_id)
+    gate_label = (gate_entry['short_question'] or gate_entry['question_text']) if gate_entry else '（対応する設問なし）'
+    values = '、'.join(condition_values)
+    return f'回答条件あり:「{gate_label}」が「{values}」の場合のみ対象'
 
 
 def run_cross_plan(df: pd.DataFrame, entries: list[dict], columns: list[str],
@@ -118,16 +144,13 @@ def run_cross_plan(df: pd.DataFrame, entries: list[dict], columns: list[str],
     'ai_comment'}）を実行する。対応するRAW列が見つからない設問はスキップし、理由をissuesに積む。
     戻り値: (results, issues)。resultsの各要素:
       GT行:   {'is_gt': True, 'attr_id': None, 'target_id', 'attr_label': 'GT', 'target_label',
-                'graph', 'ai_comment': bool, 'base': int, 'unanswered': int, 'table': DataFrame}
+                'graph', 'ai_comment': bool, 'base': int, 'eligible_total': int,
+                'condition_label': str|None, 'table': DataFrame}
       クロス行: {'is_gt': False, 'attr_id', 'target_id', 'attr_label', 'target_label', 'graph',
                 'ai_comment': bool, 'pct': DataFrame, 'n': DataFrame, 'base': {属性ラベル: int},
-                'unanswered': {属性ラベル: int}}
-    unanswered（実装済み、2026-08-25）は、対象設問が空欄だった件数——母数（base）には
-    含まれない「未回答」の件数を画面・Excelの表に「全体」列/行の直前として追加表示するために
-    使う（core.aggregate.cross_tabulationのdocstring参照）。対象設問に前提条件
-    （condition_entry_id/condition_values）が設定されている場合、_apply_conditionでその
-    条件を満たす行だけに絞ったtarget_df（＝分岐で対象外になった回答者を除いた集団）を母数・
-    未回答・％の計算に使う（ファイル冒頭のdocstring参照）。
+                'eligible_total': int, 'condition_label': str|None}
+    eligible_total/condition_labelは対象設問の前提条件（condition_entry_id/condition_values）
+    から求める本来の対象者数・回答条件の表示文字列（ファイル冒頭のdocstring参照）。
     """
     entry_to_col = _entry_to_raw_column(entries, columns)
     by_id = {e['id']: e for e in entries}
@@ -143,24 +166,25 @@ def run_cross_plan(df: pd.DataFrame, entries: list[dict], columns: list[str],
             continue
         target_options, target_labels = _option_texts_and_labels(target_entry)
         target_is_multi = target_entry['format'] == FORMAT_MA
-        target_df, condition_issue = _apply_condition(df, target_entry, by_id, entry_to_col)
+        eligible_total, condition_issue = _eligible_total(df, target_entry, by_id, entry_to_col)
         if condition_issue:
             issues.append(condition_issue)
-        target_other = _target_other_label(target_entry, target_labels, target_df[target_col],
+        condition_label = _condition_label(target_entry, by_id)
+        target_other = _target_other_label(target_entry, target_labels, df[target_col],
                                             target_options, target_is_multi)
 
         if row['attr'] is None:
-            base = compute_base_count(target_df[target_col])
+            base = compute_base_count(df[target_col])
             table = (
-                simple_tabulation_multi(target_df[target_col], target_options, target_labels, other_label=target_other)
+                simple_tabulation_multi(df[target_col], target_options, target_labels, other_label=target_other)
                 if target_is_multi
-                else simple_tabulation_single(target_df[target_col], target_options, target_labels, other_label=target_other)
+                else simple_tabulation_single(df[target_col], target_options, target_labels, other_label=target_other)
             )
             results.append({
                 'is_gt': True, 'attr_id': None, 'target_id': row['target'],
                 'attr_label': 'GT', 'target_label': row['target_label'], 'graph': row.get('graph', ''),
                 'ai_comment': row.get('ai_comment', True), 'base': base,
-                'unanswered': len(target_df) - base, 'table': table,
+                'eligible_total': eligible_total, 'condition_label': condition_label, 'table': table,
             })
             continue
 
@@ -173,7 +197,7 @@ def run_cross_plan(df: pd.DataFrame, entries: list[dict], columns: list[str],
         attr_is_multi = attr_entry['format'] == FORMAT_MA
 
         cross = cross_tabulation(
-            target_df, attr_col=attr_col, attr_options=attr_options, attr_is_multi=attr_is_multi,
+            df, attr_col=attr_col, attr_options=attr_options, attr_is_multi=attr_is_multi,
             target_col=target_col, target_options=target_options, target_is_multi=target_is_multi,
             attr_display_labels=attr_labels, target_display_labels=target_labels,
             target_other_label=target_other,
@@ -182,7 +206,7 @@ def run_cross_plan(df: pd.DataFrame, entries: list[dict], columns: list[str],
             'is_gt': False, 'attr_id': row['attr'], 'target_id': row['target'],
             'attr_label': row['attr_label'], 'target_label': row['target_label'], 'graph': row.get('graph', ''),
             'ai_comment': row.get('ai_comment', True), 'pct': cross['pct'], 'n': cross['n'], 'base': cross['base'],
-            'unanswered': cross['unanswered'],
+            'eligible_total': eligible_total, 'condition_label': condition_label,
         })
 
     return results, issues
@@ -197,7 +221,7 @@ def run_triple_cross(df: pd.DataFrame, entries: list[dict], columns: list[str],
     戻り値: (results, issues)。resultsの各要素:
       {'attr_large_label', 'attr_mid_label', 'target_label', 'pct': DataFrame（MultiIndex行）,
        'n': DataFrame（同形状）, 'base': {(属性大, 属性中): int},
-       'unanswered': {(属性大, 属性中): int}}
+       'eligible_total': int, 'condition_label': str|None}
     """
     questions = gridable_questions(entries)
     by_label = {question_label(q): q for q in questions}
@@ -232,14 +256,15 @@ def run_triple_cross(df: pd.DataFrame, entries: list[dict], columns: list[str],
         mid_options, mid_labels = _option_texts_and_labels(mid_entry)
         target_options, target_labels = _option_texts_and_labels(target_entry)
         target_is_multi = target_entry['format'] == FORMAT_MA
-        target_df, condition_issue = _apply_condition(df, target_entry, by_id, entry_to_col)
+        eligible_total, condition_issue = _eligible_total(df, target_entry, by_id, entry_to_col)
         if condition_issue:
             issues.append(condition_issue)
-        target_other = _target_other_label(target_entry, target_labels, target_df[target_col],
+        condition_label = _condition_label(target_entry, by_id)
+        target_other = _target_other_label(target_entry, target_labels, df[target_col],
                                             target_options, target_is_multi)
 
         cross = triple_cross_tabulation(
-            target_df,
+            df,
             attr_large_col=large_col, attr_large_options=large_options,
             attr_large_is_multi=large_entry['format'] == FORMAT_MA,
             attr_mid_col=mid_col, attr_mid_options=mid_options,
@@ -251,7 +276,8 @@ def run_triple_cross(df: pd.DataFrame, entries: list[dict], columns: list[str],
         )
         results.append({
             'attr_large_label': large_label, 'attr_mid_label': mid_label, 'target_label': target_label_in,
-            'pct': cross['pct'], 'n': cross['n'], 'base': cross['base'], 'unanswered': cross['unanswered'],
+            'pct': cross['pct'], 'n': cross['n'], 'base': cross['base'],
+            'eligible_total': eligible_total, 'condition_label': condition_label,
         })
 
     return results, issues
@@ -275,12 +301,10 @@ def run_list_cross(df: pd.DataFrame, entries: list[dict], columns: list[str],
     戻り値: (groups, issues)。groupsの各要素:
       {'target_id', 'target_label', 'target_labels'（原順・その他バケット込み）,
        'overall_pct': {ラベル: float}, 'overall_n': {ラベル: int}, 'overall_base': int,
-       'overall_unanswered': int,
+       'eligible_total': int, 'condition_label': str|None,
        'attrs': [{'attr_id', 'attr_label', 'categories': [
-           {'label', 'pct': {ラベル: float}, 'n': {ラベル: int}, 'base': int, 'unanswered': int}
+           {'label', 'pct': {ラベル: float}, 'n': {ラベル: int}, 'base': int}
        ]}]}
-    unanswered/overall_unanswered（実装済み、2026-08-25）はcross_tabulationのunanswered
-    （母数に含まれない未回答の件数）をそのまま引き継いだもの。
     """
     questions = gridable_questions(entries)
     by_label = {question_label(q): q for q in questions}
@@ -304,10 +328,11 @@ def run_list_cross(df: pd.DataFrame, entries: list[dict], columns: list[str],
             continue
         target_options, target_labels = _option_texts_and_labels(target_entry)
         target_is_multi = target_entry['format'] == FORMAT_MA
-        target_df, condition_issue = _apply_condition(df, target_entry, by_id, entry_to_col)
+        eligible_total, condition_issue = _eligible_total(df, target_entry, by_id, entry_to_col)
         if condition_issue:
             issues.append(condition_issue)
-        target_other = _target_other_label(target_entry, target_labels, target_df[target_col],
+        condition_label = _condition_label(target_entry, by_id)
+        target_other = _target_other_label(target_entry, target_labels, df[target_col],
                                             target_options, target_is_multi)
         all_target_labels = [*target_labels, target_other] if target_other else list(target_labels)
 
@@ -315,7 +340,6 @@ def run_list_cross(df: pd.DataFrame, entries: list[dict], columns: list[str],
         overall_pct: dict[str, float] | None = None
         overall_n: dict[str, int] | None = None
         overall_base = 0
-        overall_unanswered = 0
 
         for attr_label_in in attrs_in:
             attr_entry = by_label.get(attr_label_in)
@@ -327,7 +351,7 @@ def run_list_cross(df: pd.DataFrame, entries: list[dict], columns: list[str],
             attr_is_multi = attr_entry['format'] == FORMAT_MA
 
             cross = cross_tabulation(
-                target_df, attr_col=attr_col, attr_options=attr_options, attr_is_multi=attr_is_multi,
+                df, attr_col=attr_col, attr_options=attr_options, attr_is_multi=attr_is_multi,
                 target_col=target_col, target_options=target_options, target_is_multi=target_is_multi,
                 attr_display_labels=attr_labels, target_display_labels=target_labels,
                 target_other_label=target_other,
@@ -336,20 +360,15 @@ def run_list_cross(df: pd.DataFrame, entries: list[dict], columns: list[str],
                 overall_pct = cross['pct'].loc[_TOTAL_LABEL].drop(_TOTAL_LABEL).to_dict()
                 overall_n = cross['n'].loc[_TOTAL_LABEL].drop(_TOTAL_LABEL).to_dict()
                 overall_base = cross['base'][_TOTAL_LABEL]
-                overall_unanswered = cross['unanswered'][_TOTAL_LABEL]
 
-            # 属性設問そのものが空欄だった回答者の分布（'未回答'カテゴリ）も、実在のカテゴリと
-            # 同列に末尾へ追加する（cross_tabulationが既に計算済みの行をそのまま使う、
-            # 2026-08-25追加）。
             categories = [
                 {
                     'label': cat,
                     'pct': cross['pct'].loc[cat].drop(_TOTAL_LABEL).to_dict(),
                     'n': cross['n'].loc[cat].drop(_TOTAL_LABEL).to_dict(),
                     'base': cross['base'][cat],
-                    'unanswered': cross['unanswered'][cat],
                 }
-                for cat in [*attr_labels, _UNANSWERED_LABEL]
+                for cat in attr_labels
             ]
             attrs.append({'attr_id': attr_entry['id'], 'attr_label': attr_label_in, 'categories': categories})
 
@@ -360,7 +379,7 @@ def run_list_cross(df: pd.DataFrame, entries: list[dict], columns: list[str],
             'target_id': target_entry['id'], 'target_label': target_label_in,
             'target_labels': all_target_labels,
             'overall_pct': overall_pct, 'overall_n': overall_n, 'overall_base': overall_base,
-            'overall_unanswered': overall_unanswered,
+            'eligible_total': eligible_total, 'condition_label': condition_label,
             'attrs': attrs,
         })
 

@@ -31,7 +31,6 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.worksheet.worksheet import Worksheet
 
 _TOTAL_LABEL = '全体'
-_UNANSWERED_LABEL = '未回答'
 _PCT_FORMAT = '0.0%'
 
 _FONT_NAME = '游ゴシック'
@@ -161,7 +160,9 @@ def _build_gt_sheet(ws: Worksheet, gt_results: list[dict]) -> None:
 
 def _write_gt_block(ws: Worksheet, row: int, r: dict) -> int:
     _set(ws, row, 1, f"{r['target_label']}（GT）", font=_TITLE_FONT)
-    row += 2
+    row += 1
+    row = _write_stats_row(ws, row, r['eligible_total'], r.get('condition_label'), base=r['base'])
+    row += 1
 
     _grid(ws, row, 4, '％', align=_LABEL_ALIGN)
     _grid(ws, row, 5, 'ｎ', align=_LABEL_ALIGN)
@@ -175,16 +176,6 @@ def _write_gt_block(ws: Worksheet, row: int, r: dict) -> int:
         _grid(ws, row, 4, round(opt_row['%'] / 100, 4), number_format=_PCT_FORMAT)
         _grid(ws, row, 5, int(opt_row['度数']))
         row += 1
-
-    # 未回答行（実装済み、2026-08-25）: 母数（base）に含まれない、対象設問が空欄だった件数。
-    # 合計（全体）行の直前に挿入する（ユーザーとの合意事項）。
-    unanswered_n = r.get('unanswered', 0)
-    total_all = base + unanswered_n
-    unanswered_pct = round(unanswered_n / total_all, 4) if total_all else 0.0
-    _grid(ws, row, 3, _UNANSWERED_LABEL, align=_LABEL_ALIGN)
-    _grid(ws, row, 4, unanswered_pct, number_format=_PCT_FORMAT)
-    _grid(ws, row, 5, unanswered_n)
-    row += 1
 
     _grid(ws, row, 3, _TOTAL_LABEL, align=_LABEL_ALIGN, is_total=True)
     _grid(ws, row, 4, 1.0, number_format=_PCT_FORMAT, is_total=True)
@@ -205,39 +196,19 @@ def _build_cross_split_sheet(ws: Worksheet, cross_results: list[dict]) -> None:
         row = _write_cross_split_block(ws, row, r)
 
 
-def _unanswered_pct(unanswered: dict, base: dict, cat) -> float:
-    u = unanswered.get(cat, 0)
-    b = base.get(cat, 0)
-    total = u + b
-    return round(u / total, 4) if total else 0.0
-
-
-def _cell_pct(pct_df: pd.DataFrame, unanswered: dict, base: dict, cat, col: str) -> float:
-    """target_cols（本物の対象選択肢）＋「未回答」の仮想列、どちらにも対応できる％セル値取得"""
-    if col == _UNANSWERED_LABEL:
-        return _unanswered_pct(unanswered, base, cat)
-    return round(pct_df.loc[cat, col] / 100, 4)
-
-
-def _cell_n(n_df: pd.DataFrame, unanswered: dict, cat, col: str) -> int:
-    if col == _UNANSWERED_LABEL:
-        return int(unanswered.get(cat, 0))
-    return int(n_df.loc[cat, col])
-
-
 def _write_cross_split_block(ws: Worksheet, row: int, r: dict) -> int:
     attr_label, target_label = r['attr_label'], r['target_label']
     pct_df, n_df, base = r['pct'], r['n'], r['base']
-    unanswered = r.get('unanswered', {})
-    target_cols = [c for c in pct_df.columns if c != _TOTAL_LABEL]
-    all_cols = [*target_cols, _UNANSWERED_LABEL]
+    all_cols = [c for c in pct_df.columns if c != _TOTAL_LABEL]
     attr_rows = [i for i in pct_df.index if i != _TOTAL_LABEL]
     n_opts = len(all_cols)
     first_col = 5  # E列
     total_col = first_col + n_opts
 
     _set(ws, row, 1, f'{attr_label} × {target_label}', font=_TITLE_FONT)
-    row += 2
+    row += 1
+    row = _write_stats_row(ws, row, r['eligible_total'], r.get('condition_label'), base=base.get(_TOTAL_LABEL))
+    row += 1
 
     # ％セクション
     _set(ws, row, 2, f' {target_label}/{attr_label}(％)', font=_SUBTITLE_FONT)
@@ -252,7 +223,7 @@ def _write_cross_split_block(ws: Worksheet, row: int, r: dict) -> int:
         label = f'{cat}\n(n={n_val})'
         _grid(ws, row, 4, label, align=_LABEL_ALIGN, is_total=is_total)
         for i, col in enumerate(all_cols):
-            _grid(ws, row, first_col + i, _cell_pct(pct_df, unanswered, base, cat, col),
+            _grid(ws, row, first_col + i, round(pct_df.loc[cat, col] / 100, 4),
                   number_format=_PCT_FORMAT, is_total=is_total)
         _grid(ws, row, total_col, round(pct_df.loc[cat, _TOTAL_LABEL] / 100, 4),
               number_format=_PCT_FORMAT, is_total=True)
@@ -271,7 +242,7 @@ def _write_cross_split_block(ws: Worksheet, row: int, r: dict) -> int:
         is_total = cat == _TOTAL_LABEL
         _grid(ws, row, 4, cat, align=_LABEL_ALIGN, is_total=is_total)
         for i, col in enumerate(all_cols):
-            _grid(ws, row, first_col + i, _cell_n(n_df, unanswered, cat, col), is_total=is_total)
+            _grid(ws, row, first_col + i, int(n_df.loc[cat, col]), is_total=is_total)
         _grid(ws, row, total_col, int(n_df.loc[cat, _TOTAL_LABEL]), is_total=True)
         row += 1
     _write_attr_axis_label(ws, header_row, row - 1, attr_label)
@@ -304,6 +275,26 @@ def _write_attr_axis_label(ws: Worksheet, row1: int, row2: int, attr_label: str)
     _merge_if_needed(ws, row1, row2, 3)
 
 
+def _write_stats_row(ws: Worksheet, row: int, eligible_total: int, condition_label: str | None,
+                      base: int | None = None) -> int:
+    """
+    n・回答率・回答条件の説明行を書く（実装済み、2026-08-25。以前の「未回答」行/列を廃止した
+    代わりに導入——詳細はcore.cross_execute/ui.tab_crosstab_result._render_stats_captionの
+    docstring参照）。baseが無い場合（トリプルクロスのように単一の代表的な母数を持たない集計）は
+    対象者数のみ書く。
+    """
+    if base is not None:
+        rate = round(base / eligible_total, 4) if eligible_total else 0.0
+        _set(ws, row, 2, f'n={base}（回答率{rate * 100:.1f}%、対象者数{eligible_total}）', font=_BODY_FONT)
+    else:
+        _set(ws, row, 2, f'対象者数{eligible_total}', font=_BODY_FONT)
+    row += 1
+    if condition_label:
+        _set(ws, row, 2, condition_label, font=_BODY_FONT)
+        row += 1
+    return row
+
+
 def _write_commentary(ws: Worksheet, row: int, r: dict) -> int:
     if r.get('commentary'):
         _set(ws, row, 3, r['commentary'], font=_COMMENTARY_FONT, align=_COMMENTARY_ALIGN)
@@ -328,24 +319,18 @@ def _write_cross_split_old_block(ws: Worksheet, row: int, r: dict) -> int:
     現行フォーマット（_write_cross_split_block）との違い: 「全体」を列・行とも先頭に置く
     （現行はどちらも末尾）——このフォーマットに変更する前の見た目に揃えたい既存の
     レポートテンプレート向け（ユーザーとの合意事項、2026-08-22）。
-    **未回答（2026-08-25追加）はこのシートの並び方に合わせ、列は最右列（全体列が先頭のため、
-    その対極＝実在の選択肢すべての右）、行は最下行（全体行が先頭のため、その対極＝実在の
-    属性カテゴリすべての下）に配置する——ユーザーとの合意事項（他シートの「全体の直前」配置とは
-    意図的に異なる）。行はcross_tabulationが既に計算済みの「未回答」カテゴリ行（pct_df/n_dfの
-    indexに含まれる）をattr_rowsの一部としてそのまま使うだけで自動的に最下行に来る。
     """
     attr_label, target_label = r['attr_label'], r['target_label']
     pct_df, n_df, base = r['pct'], r['n'], r['base']
-    unanswered = r.get('unanswered', {})
-    target_cols = [c for c in pct_df.columns if c != _TOTAL_LABEL]
-    all_cols = [*target_cols, _UNANSWERED_LABEL]
+    all_cols = [c for c in pct_df.columns if c != _TOTAL_LABEL]
     attr_rows = [i for i in pct_df.index if i != _TOTAL_LABEL]
     n_opts = len(all_cols)
-    first_col = 5  # E列（全体列がここに来る、その右にオプション列→未回答列と続く）
+    first_col = 5  # E列（全体列がここに来る、その右にオプション列と続く）
     opt_start_col = first_col + 1
 
     _set(ws, row, 1, f'{attr_label} × {target_label}', font=_TITLE_FONT)
     row += 1
+    row = _write_stats_row(ws, row, r['eligible_total'], r.get('condition_label'), base=base.get(_TOTAL_LABEL))
 
     # ％セクション
     _set(ws, row, 2, f' {target_label}/{attr_label}(％)', font=_SUBTITLE_FONT)
@@ -371,7 +356,7 @@ def _write_cross_split_old_block(ws: Worksheet, row: int, r: dict) -> int:
         _grid(ws, row, first_col, round(pct_df.loc[cat, _TOTAL_LABEL] / 100, 4),
               number_format=_PCT_FORMAT, is_total=True)
         for i, col in enumerate(all_cols):
-            _grid(ws, row, opt_start_col + i, _cell_pct(pct_df, unanswered, base, cat, col),
+            _grid(ws, row, opt_start_col + i, round(pct_df.loc[cat, col] / 100, 4),
                   number_format=_PCT_FORMAT, is_total=is_total)
         row += 1
     _write_attr_axis_label(ws, header_row, row - 1, attr_label)
@@ -398,7 +383,7 @@ def _write_cross_split_old_block(ws: Worksheet, row: int, r: dict) -> int:
         _grid(ws, row, 4, cat, align=_LABEL_ALIGN, is_total=is_total)
         _grid(ws, row, first_col, int(n_df.loc[cat, _TOTAL_LABEL]), is_total=True)
         for i, col in enumerate(all_cols):
-            _grid(ws, row, opt_start_col + i, _cell_n(n_df, unanswered, cat, col), is_total=is_total)
+            _grid(ws, row, opt_start_col + i, int(n_df.loc[cat, col]), is_total=is_total)
         row += 1
     _write_attr_axis_label(ws, header_row, row - 1, attr_label)
     row += 1
@@ -422,10 +407,8 @@ def _build_cross_combined_sheet(ws: Worksheet, cross_results: list[dict]) -> Non
 def _write_cross_combined_block(ws: Worksheet, row: int, r: dict) -> int:
     attr_label, target_label = r['attr_label'], r['target_label']
     pct_df, n_df = r['pct'], r['n']
-    unanswered = r.get('unanswered', {})
     base = r['base']
-    target_cols = [c for c in pct_df.columns if c != _TOTAL_LABEL]
-    all_cols = [*target_cols, _UNANSWERED_LABEL]
+    all_cols = [c for c in pct_df.columns if c != _TOTAL_LABEL]
     attr_rows = [i for i in pct_df.index if i != _TOTAL_LABEL]
     n_opts = len(all_cols)
     first_col = 5  # E列
@@ -433,6 +416,7 @@ def _write_cross_combined_block(ws: Worksheet, row: int, r: dict) -> int:
 
     _set(ws, row, 1, f'{attr_label} × {target_label}', font=_TITLE_FONT)
     row += 1
+    row = _write_stats_row(ws, row, r['eligible_total'], r.get('condition_label'), base=base.get(_TOTAL_LABEL))
     _set(ws, row, 2, f' {target_label}/{attr_label}', font=_SUBTITLE_FONT)
     row += 1
     row = _write_target_group_header(ws, row, target_label, n_opts, first_col)
@@ -450,10 +434,10 @@ def _write_cross_combined_block(ws: Worksheet, row: int, r: dict) -> int:
         n_row, pct_row = row, row + 1
         _grid(ws, n_row, 4, cat, align=_LABEL_ALIGN, is_total=is_total)
         for i, col in enumerate(all_cols):
-            _grid(ws, n_row, first_col + i, _cell_n(n_df, unanswered, cat, col), is_total=is_total)
+            _grid(ws, n_row, first_col + i, int(n_df.loc[cat, col]), is_total=is_total)
         _grid(ws, n_row, total_col, int(n_df.loc[cat, _TOTAL_LABEL]), is_total=True)
         for i, col in enumerate(all_cols):
-            _grid(ws, pct_row, first_col + i, _cell_pct(pct_df, unanswered, base, cat, col),
+            _grid(ws, pct_row, first_col + i, round(pct_df.loc[cat, col] / 100, 4),
                   number_format=_PCT_FORMAT, is_total=is_total)
         _grid(ws, pct_row, total_col, round(pct_df.loc[cat, _TOTAL_LABEL] / 100, 4),
               number_format=_PCT_FORMAT, is_total=True)
@@ -514,12 +498,15 @@ def _ordered_target_labels(group: dict, sort_order: str) -> tuple[list[str], dic
 
 def _write_list_cross_group(ws: Worksheet, row: int, group: dict, sort_order: str) -> int:
     labels, original_index = _ordered_target_labels(group, sort_order)
-    n_opts = len(labels) + 1  # +1は未回答列（実装済み、2026-08-25、全体列の直前に挿入）
+    n_opts = len(labels)
     first_col = 3  # C列
     total_col = first_col + n_opts
 
     _set(ws, row, 1, group['target_label'], font=_TITLE_FONT)
-    row += 2
+    row += 1
+    row = _write_stats_row(ws, row, group['eligible_total'], group.get('condition_label'),
+                            base=group['overall_base'])
+    row += 1
 
     row = _write_list_cross_half(ws, row, group, labels, original_index, first_col, total_col,
                                   section_label='％表', is_pct=True)
@@ -532,19 +519,15 @@ def _write_list_cross_group(ws: Worksheet, row: int, group: dict, sort_order: st
 def _write_list_cross_half(ws: Worksheet, row: int, group: dict, labels: list[str],
                             original_index: dict[str, int], first_col: int, total_col: int,
                             *, section_label: str, is_pct: bool) -> int:
-    unanswered_col = first_col + len(labels)  # 未回答列（labelsの直後、total_colの直前）
-
-    # 元の選択肢番号の行（見本どおり、その他バケット等の合成列・未回答列は空欄）
+    # 元の選択肢番号の行（見本どおり、その他バケット等の合成列は空欄）
     for i, label in enumerate(labels):
         _grid(ws, row, first_col + i, original_index.get(label), align=_LABEL_ALIGN)
-    _grid(ws, row, unanswered_col, None, align=_LABEL_ALIGN)
     row += 1
 
-    # 見出し行（％表/実数表、選択肢名、未回答。実数表のみ最終列に「全体」を出す——見本の非対称な仕様）
+    # 見出し行（％表/実数表、選択肢名。実数表のみ最終列に「全体」を出す——見本の非対称な仕様）
     _grid(ws, row, 2, section_label, align=_LABEL_ALIGN)
     for i, label in enumerate(labels):
         _grid(ws, row, first_col + i, label, align=_LABEL_ALIGN)
-    _grid(ws, row, unanswered_col, _UNANSWERED_LABEL, align=_LABEL_ALIGN)
     if not is_pct:
         _grid(ws, row, total_col, _TOTAL_LABEL, align=_LABEL_ALIGN, is_total=True)
     row += 1
@@ -554,8 +537,6 @@ def _write_list_cross_half(ws: Worksheet, row: int, group: dict, labels: list[st
     values = group['overall_pct'] if is_pct else group['overall_n']
     for i, label in enumerate(labels):
         _write_list_cross_value(ws, row, first_col + i, values.get(label, 0), is_pct=is_pct, is_total=True)
-    _write_unanswered_cell(ws, row, unanswered_col, group.get('overall_unanswered', 0), group['overall_base'],
-                            is_pct=is_pct, is_total=True)
     if is_pct:
         _grid(ws, row, total_col, f"n={group['overall_base']}", align=_VALUE_ALIGN, is_total=True)
     else:
@@ -569,7 +550,6 @@ def _write_list_cross_half(ws: Worksheet, row: int, group: dict, labels: list[st
             values = cat['pct'] if is_pct else cat['n']
             for i, label in enumerate(labels):
                 _write_list_cross_value(ws, row, first_col + i, values.get(label, 0), is_pct=is_pct)
-            _write_unanswered_cell(ws, row, unanswered_col, cat.get('unanswered', 0), cat['base'], is_pct=is_pct)
             if is_pct:
                 _grid(ws, row, total_col, f"n={cat['base']}", align=_VALUE_ALIGN)
             else:
@@ -579,17 +559,6 @@ def _write_list_cross_half(ws: Worksheet, row: int, group: dict, labels: list[st
         row += 1  # 属性グループの直後は1行空ける（見本どおり）
 
     return row
-
-
-def _write_unanswered_cell(ws: Worksheet, row: int, col: int, unanswered: int, base: int, *,
-                            is_pct: bool, is_total: bool = False) -> None:
-    """未回答セルを書く（実装済み、2026-08-25）。％は母数（base）に未回答を足した総数に対する割合。"""
-    if is_pct:
-        total = unanswered + base
-        pct_value = round(unanswered / total * 100, 1) if total else 0.0
-        _write_list_cross_value(ws, row, col, pct_value, is_pct=True, is_total=is_total)
-    else:
-        _write_list_cross_value(ws, row, col, unanswered, is_pct=False, is_total=is_total)
 
 
 def _write_list_cross_value(ws: Worksheet, row: int, col: int, value: float, *, is_pct: bool,

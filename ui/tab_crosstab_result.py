@@ -26,7 +26,6 @@ from core.excel_report import SORT_DESC, build_report_workbook, order_target_lab
 from core.usage_log import DEFAULT_FX_RATE, build_entry as build_log_entry, snapshot as usage_snapshot
 
 _TOTAL_LABEL = '全体'
-_UNANSWERED_LABEL = '未回答'
 
 
 def render(columns: list[str], rows: list[dict], excluded_row_ids: list[int], entries: list[dict],
@@ -172,23 +171,37 @@ def _format_pct_value(value: float) -> str:
     return f'{value:g}%'
 
 
-def _render_gt_table(r: dict) -> None:
-    """GT（単純集計）表示: 番号列＋未回答行＋全体行を付けて表示する（コア計算関数の戻り値は
-    グラフ描画にも使うため、未回答行・全体行を混ぜない——表示専用にここで組み立てる）。
-    未回答（実装済み、2026-08-25）は対象設問が空欄だった件数——母数（base）には含まれない。
+def _render_stats_caption(eligible_total: int, condition_label: str | None, base: int | None = None) -> None:
     """
-    st.caption(f"n={r['base']}")
+    n・回答率・回答条件のキャプションを表示する（実装済み、2026-08-25。以前の「未回答」行/列を
+    廃止した代わりに導入——母数（base）は元々「セルに何らかの回答があった数」だけで計算される
+    ため変更しない。回答率＝母数÷本来の対象者数（eligible_total、前提条件があればその
+    対象者数、無ければ全回答者数）で、genuine non-response（聞かれたのに空欄）の可視性を保つ。
+    条件が設定されている設問には、設問定義からそのまま組み立てた「回答条件あり」の説明も
+    表示する（core.cross_execute._condition_label参照）。baseが無い場合（トリプルクロスの
+    ように単一の代表的な母数を持たない集計）は対象者数のみ表示する。
+    """
+    if base is not None:
+        rate = round(base / eligible_total * 100, 1) if eligible_total else 0.0
+        st.caption(f"n={base}（回答率{_format_pct_value(rate)}、対象者数{eligible_total}）")
+    else:
+        st.caption(f'対象者数{eligible_total}')
+    if condition_label:
+        st.caption(condition_label)
+
+
+def _render_gt_table(r: dict) -> None:
+    """GT（単純集計）表示: 番号列＋全体行を付けて表示する（コア計算関数の戻り値はグラフ描画にも
+    使うため、全体行を混ぜない——表示専用にここで組み立てる）。
+    """
+    _render_stats_caption(r['eligible_total'], r.get('condition_label'), base=r['base'])
     table = r['table'].copy().rename(columns={'度数': '実数'})
     table['%'] = table['%'].apply(_format_pct_value)
     # 番号列に数値(int)と全体行の空文字列(str)が混在すると、TextColumnとして固定表示を
     # 指定した際にpyarrowのArrow変換がint64への型推定を試みて失敗する実害があった
     # （2026-08-23、列全体を最初からstrに揃えて回避）。
     table.insert(0, '番号', [str(i) for i in range(1, len(table) + 1)])
-    unanswered_n = r.get('unanswered', 0)
-    total_all = r['base'] + unanswered_n
-    unanswered_pct = round(unanswered_n / total_all * 100, 1) if total_all else 0.0
     extra_rows = pd.DataFrame([
-        {'番号': '', '選択肢': _UNANSWERED_LABEL, '実数': unanswered_n, '%': _format_pct_value(unanswered_pct)},
         {'番号': '', '選択肢': _TOTAL_LABEL, '実数': r['base'], '%': _format_pct_value(100.0)},
     ])
     st.dataframe(
@@ -197,32 +210,9 @@ def _render_gt_table(r: dict) -> None:
     )
 
 
-def _insert_unanswered_column(pct_df: pd.DataFrame, n_df: pd.DataFrame, base: dict,
-                               unanswered: dict) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """
-    「全体」列の直前（無ければ最終列）に「未回答」列を挿入したコピーを返す（実装済み、
-    2026-08-25）。母数（base）には含まれない、対象設問が空欄だった件数——％はその属性カテゴリの
-    総数（母数＋未回答）に対する割合。cross_tabulationは列末尾に「全体」列を持つが、
-    triple_cross_tabulationは持たない（現状、画面には母数列自体を出していない）ため、
-    「全体」列が無ければ単純に末尾へ追加する。
-    """
-    pct_df = pct_df.copy()
-    n_df = n_df.copy()
-    loc = list(n_df.columns).index(_TOTAL_LABEL) if _TOTAL_LABEL in n_df.columns else len(n_df.columns)
-    n_values, pct_values = [], []
-    for idx in n_df.index:
-        u = unanswered.get(idx, 0)
-        b = base.get(idx, 0)
-        total = u + b
-        n_values.append(u)
-        pct_values.append(round(u / total * 100, 1) if total else 0.0)
-    n_df.insert(loc, _UNANSWERED_LABEL, n_values)
-    pct_df.insert(loc, _UNANSWERED_LABEL, pct_values)
-    return pct_df, n_df
-
-
 def _render_cross_table(r: dict, table_format: str) -> None:
-    pct_df, n_df = _insert_unanswered_column(r['pct'], r['n'], r['base'], r.get('unanswered', {}))
+    _render_stats_caption(r['eligible_total'], r.get('condition_label'), base=r['base'].get(_TOTAL_LABEL))
+    pct_df, n_df = r['pct'], r['n']
 
     if table_format == '％実数別表':
         st.dataframe(_format_pct(pct_df), width='stretch', column_config=_pin('％表'))
@@ -233,7 +223,8 @@ def _render_cross_table(r: dict, table_format: str) -> None:
 
 
 def _render_triple_cross_table(r: dict, table_format: str) -> None:
-    pct_df, n_df = _insert_unanswered_column(r['pct'], r['n'], r['base'], r.get('unanswered', {}))
+    _render_stats_caption(r['eligible_total'], r.get('condition_label'))
+    pct_df, n_df = r['pct'], r['n']
     if table_format == '％実数別表':
         st.dataframe(_format_triple_multiindex(pct_df, '％表', suffix='%'), width='stretch', column_config=_pin('％表'))
         st.dataframe(_format_triple_multiindex(n_df, '実数表', suffix=''), width='stretch', column_config=_pin('実数表'))
@@ -253,6 +244,7 @@ def _render_list_cross_table(group: dict, sort_order: str, table_format: str) ->
     カテゴリ、属性設問名は各グループの最初の行だけ表示）はExcel出力（core/excel_report.py）
     と同じ考え方。
     """
+    _render_stats_caption(group['eligible_total'], group.get('condition_label'), base=group['overall_base'])
     labels = order_target_labels(group, sort_order)
     if table_format == '％実数別表':
         st.dataframe(_format_list_cross_table(group, labels, '％表', is_pct=True),
@@ -265,24 +257,22 @@ def _render_list_cross_table(group: dict, sort_order: str, table_format: str) ->
                      column_config=_pin('属性設問'))
 
 
-def _list_cross_rows(group: dict) -> list[tuple[str, str, dict, dict, int, int]]:
+def _list_cross_rows(group: dict) -> list[tuple[str, str, dict, dict, int]]:
     """
-    (属性設問名, カテゴリ名, ％辞書, 実数辞書, 母数, 未回答) のタプル列を返す。先頭は対象設問
-    全体の「全体」行。未回答（実装済み、2026-08-25）は母数に含まれない対象設問が空欄だった件数。
+    (属性設問名, カテゴリ名, ％辞書, 実数辞書, 母数) のタプル列を返す。先頭は対象設問全体の
+    「全体」行。
     """
-    rows = [('', '全体', group['overall_pct'], group['overall_n'], group['overall_base'],
-              group.get('overall_unanswered', 0))]
+    rows = [('', '全体', group['overall_pct'], group['overall_n'], group['overall_base'])]
     for attr in group['attrs']:
         for cat in attr['categories']:
-            rows.append((attr['attr_label'], cat['label'], cat['pct'], cat['n'], cat['base'],
-                          cat.get('unanswered', 0)))
+            rows.append((attr['attr_label'], cat['label'], cat['pct'], cat['n'], cat['base']))
     return rows
 
 
 def _format_list_cross_table(group: dict, labels: list[str], first_col_label: str, *, is_pct: bool) -> pd.DataFrame:
     data = []
     prev_attr = object()
-    for attr_label, category, pct, n, base, unanswered in _list_cross_rows(group):
+    for attr_label, category, pct, n, base in _list_cross_rows(group):
         shown_attr = attr_label if attr_label != prev_attr else ''
         prev_attr = attr_label
         values = pct if is_pct else n
@@ -290,14 +280,7 @@ def _format_list_cross_table(group: dict, labels: list[str], first_col_label: st
         for label in labels:
             v = values.get(label, 0)
             row_dict[label] = (_format_pct_value(v) if v else '') if is_pct else (str(int(v)) if v else '')
-        total = base + unanswered
-        if is_pct:
-            u_pct = round(unanswered / total * 100, 1) if total else 0.0
-            row_dict[_UNANSWERED_LABEL] = _format_pct_value(u_pct) if unanswered else ''
-            row_dict['全体'] = f'n={base}'
-        else:
-            row_dict[_UNANSWERED_LABEL] = str(unanswered) if unanswered else ''
-            row_dict['全体'] = str(int(base))
+        row_dict['全体'] = f'n={base}' if is_pct else str(int(base))
         data.append(row_dict)
     return pd.DataFrame(data)
 
@@ -306,20 +289,18 @@ def _stack_list_cross_table(group: dict, labels: list[str]) -> pd.DataFrame:
     """属性カテゴリごとに実数行・％行を交互に並べたDataFrameを作る（％＆実数表のフォーマット）"""
     rows = []
     prev_attr = object()
-    for attr_label, category, pct, n, base, unanswered in _list_cross_rows(group):
+    for attr_label, category, pct, n, base in _list_cross_rows(group):
         shown_attr = attr_label if attr_label != prev_attr else ''
         prev_attr = attr_label
-        total = base + unanswered
-        u_pct = round(unanswered / total * 100, 1) if total else 0.0
         rows.append({
             '属性設問': shown_attr, '属性カテゴリ': category, '種別': '実数',
             **{label: n.get(label, 0) for label in labels},
-            _UNANSWERED_LABEL: unanswered, '全体': base,
+            '全体': base,
         })
         rows.append({
             '属性設問': '', '属性カテゴリ': '', '種別': '％',
             **{label: f"{pct.get(label, 0)}%" for label in labels},
-            _UNANSWERED_LABEL: f'{u_pct}%', '全体': f'n={base}',
+            '全体': f'n={base}',
         })
     return pd.DataFrame(rows)
 

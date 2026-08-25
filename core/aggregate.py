@@ -24,7 +24,6 @@ from core.text_normalize import normalize_for_comparison
 
 _MULTI_DELIM = ', '
 _TOTAL_LABEL = '全体'
-_UNANSWERED_LABEL = '未回答'
 
 
 def _normalize_value(text) -> str:
@@ -251,25 +250,18 @@ def cross_tabulation(df: pd.DataFrame, attr_col: str, attr_options: list[str], a
     target_other_labelを指定すると、対象設問の選択肢一覧に無い値（SPEC 5.4.1のその他自由記述の
     可能性がある値）を「全体」列の手前にまとめて集計する列として追加する（属性側は対象外——
     属性のその他バケット化は現状の要望に含まれないため実装していない）。
-    戻り値: {'pct': DataFrame(index=attr_labels+['未回答', '全体'], columns=target_labels(+other)+['全体']),
-             'n': DataFrame(同形状), 'base': {属性ラベル: int},
-             'unanswered': {属性ラベル: int}}
-    unanswered（実装済み、2026-08-25）は、その属性カテゴリに属する回答者のうち対象設問が
-    空欄だった件数——母数（base）には含まれない「未回答」の件数を別途知りたいという要望を受けて
-    追加した。pct_df/n_dfのDataFrame自体には含めず（呼び出し側が「全体」列の直前に独立した列として
-    挿入する、画面表示・Excel出力それぞれの都合に合わせて配置できるように）、baseと同じキーを持つ
-    別辞書として返す。
-    加えて、属性設問そのものが空欄だった回答者（今までどの属性カテゴリ行にも現れていなかった）を
-    まとめる「未回答」行を、「全体」行の直前に自動的に追加する（同日中の追加要望——列だけでなく
-    行にも同じ考え方を適用してほしいとのこと）。この行の値は他の属性カテゴリ行と全く同じ計算
-    （そのカテゴリ＝属性が空欄だった回答者に対する対象設問の分布）で、base/unanswered辞書にも
-    通常の属性ラベルと同じキー（'未回答'）で入る——「未回答」行×「未回答」列の交点は自然に
-    「属性・対象の両方が空欄だった回答者数」になる。
+    戻り値: {'pct': DataFrame(index=attr_labels+['全体'], columns=target_labels(+other)+['全体']),
+             'n': DataFrame(同形状), 'base': {属性ラベル: int}}
+    母数（base）は常に「セルに何らかの回答があった数」——分岐（スキップロジック）で対象外に
+    なった回答者は、この列・行のどちらにも一切現れない（2026-08-25、「未回答」行/列の廃止・
+    回答条件表示への置き換えに伴う設計変更。以前はここに「未回答」という擬似カテゴリ行/列と
+    それ専用の別基準％があったが、％の分母が別基準になる行が1つだけ混ざる複雑さの割に実益が
+    薄いという判断で廃止した——本来の対象者数に対する回答率を知りたい場合はcore.cross_execute
+    の「回答条件あり」表示・回答率計算を使う、SPEC 5.4.2/5.4.3参照）。
     """
     attr_labels = attr_display_labels or attr_options
     target_labels = target_display_labels or target_options
     all_target_labels = [*target_labels, target_other_label] if target_other_label else list(target_labels)
-    all_attr_labels = [*attr_labels, _UNANSWERED_LABEL]
 
     attr_values = df[attr_col].astype(str).str.strip()
     target_values = df[target_col]
@@ -277,13 +269,11 @@ def cross_tabulation(df: pd.DataFrame, attr_col: str, attr_options: list[str], a
     pct_rows: dict[str, dict[str, float]] = {}
     n_rows: dict[str, dict[str, int]] = {}
     base: dict[str, int] = {}
-    unanswered: dict[str, int] = {}
 
     def _add_attr_row(row_label: str, mask: pd.Series) -> None:
         sub_target = target_values[mask]
         sub_base = compute_base_count(sub_target)
         base[row_label] = sub_base
-        unanswered[row_label] = len(sub_target) - sub_base
 
         row_n = _target_distribution(sub_target, target_options, target_labels, target_is_multi,
                                       other_label=target_other_label)
@@ -295,14 +285,13 @@ def cross_tabulation(df: pd.DataFrame, attr_col: str, attr_options: list[str], a
 
     for attr_opt, attr_label in zip(attr_options, attr_labels):
         _add_attr_row(attr_label, _attr_mask(attr_values, attr_opt, attr_is_multi))
-    _add_attr_row(_UNANSWERED_LABEL, attr_values == '')
 
-    pct_df = pd.DataFrame(pct_rows).T.reindex(index=all_attr_labels, columns=all_target_labels)
-    n_df = pd.DataFrame(n_rows).T.reindex(index=all_attr_labels, columns=all_target_labels)
+    pct_df = pd.DataFrame(pct_rows).T.reindex(index=attr_labels, columns=all_target_labels)
+    n_df = pd.DataFrame(n_rows).T.reindex(index=attr_labels, columns=all_target_labels)
 
     # 全体列（行ごとの母数をそのまま表示——MAの対象設問は列合計が100%を超え得るため、
     # 「全体列」はあくまでその行の母数を示す参考列とする）
-    n_df[_TOTAL_LABEL] = pd.Series(base).reindex(all_attr_labels)
+    n_df[_TOTAL_LABEL] = pd.Series(base).reindex(attr_labels)
     pct_df[_TOTAL_LABEL] = 100.0
 
     # 全体行（属性カテゴリを横断した合計。属性がMAだと単純合算では二重カウントになるため、
@@ -317,9 +306,8 @@ def cross_tabulation(df: pd.DataFrame, attr_col: str, attr_options: list[str], a
         for label, n in total_row_n.items()
     }
     base[_TOTAL_LABEL] = total_base
-    unanswered[_TOTAL_LABEL] = len(target_values) - total_base
 
-    return {'pct': pct_df, 'n': n_df, 'base': base, 'unanswered': unanswered}
+    return {'pct': pct_df, 'n': n_df, 'base': base}
 
 
 def triple_cross_tabulation(df: pd.DataFrame,
@@ -339,15 +327,10 @@ def triple_cross_tabulation(df: pd.DataFrame,
     target_other_labelはcross_tabulationと同じ（対象設問のその他自由記述をまとめて集計する
     列を追加する）。
     戻り値: {'pct': DataFrame(MultiIndex行=(属性大, 属性中), 列=対象ラベル(+other)),
-             'n': DataFrame(同形状), 'base': {(属性大, 属性中): int},
-             'unanswered': {(属性大, 属性中): int}}
-    unanswered（実装済み、2026-08-25）はcross_tabulationと同じ意味（母数に含まれない未回答の
-    件数）——詳細はcross_tabulationのdocstring参照。
-    加えて、属性大・属性中のどちらか（または両方）が空欄で、既存のどの(属性大, 属性中)行にも
-    分類されていなかった回答者をまとめる('未回答','未回答')行を末尾に追加する（cross_tabulationの
-    「未回答」行と同じ考え方——ただし属性が2軸あるため、片方だけ未回答/両方未回答を区別せず
-    1行にまとめる。指定した属性大・属性中のどちらか一方でも実在の選択肢に一致しない限り
-    この行に含まれる）。
+             'n': DataFrame(同形状), 'base': {(属性大, 属性中): int}}
+    母数（base）の考え方はcross_tabulationと同じ（2026-08-25の「未回答」廃止・回答条件表示への
+    置き換え、詳細はcross_tabulationのdocstring参照）——属性大・属性中のどちらかが空欄の回答者を
+    まとめる行は持たない。
     """
     large_labels = attr_large_labels or attr_large_options
     mid_labels = attr_mid_labels or attr_mid_options
@@ -362,14 +345,6 @@ def triple_cross_tabulation(df: pd.DataFrame,
     pct_rows: list[dict[str, float]] = []
     n_rows: list[dict[str, int]] = []
     base: dict[tuple[str, str], int] = {}
-    unanswered: dict[tuple[str, str], int] = {}
-
-    large_any_mask = pd.Series(False, index=df.index)
-    for large_opt in attr_large_options:
-        large_any_mask |= _attr_mask(large_values, large_opt, attr_large_is_multi)
-    mid_any_mask = pd.Series(False, index=df.index)
-    for mid_opt in attr_mid_options:
-        mid_any_mask |= _attr_mask(mid_values, mid_opt, attr_mid_is_multi)
 
     def _add_row(key: tuple[str, str], mask: pd.Series) -> None:
         sub_target = target_values[mask]
@@ -386,16 +361,14 @@ def triple_cross_tabulation(df: pd.DataFrame,
         n_rows.append(row_n)
         pct_rows.append(row_pct)
         base[key] = sub_base
-        unanswered[key] = len(sub_target) - sub_base
 
     for large_opt, large_label in zip(attr_large_options, large_labels):
         large_mask = _attr_mask(large_values, large_opt, attr_large_is_multi)
         for mid_opt, mid_label in zip(attr_mid_options, mid_labels):
             mid_mask = _attr_mask(mid_values, mid_opt, attr_mid_is_multi)
             _add_row((large_label, mid_label), large_mask & mid_mask)
-    _add_row((_UNANSWERED_LABEL, _UNANSWERED_LABEL), ~(large_any_mask & mid_any_mask))
 
     index = pd.MultiIndex.from_tuples(index_tuples, names=['属性（大）', '属性（中）'])
     pct_df = pd.DataFrame(pct_rows, index=index).reindex(columns=all_t_labels)
     n_df = pd.DataFrame(n_rows, index=index).reindex(columns=all_t_labels)
-    return {'pct': pct_df, 'n': n_df, 'base': base, 'unanswered': unanswered}
+    return {'pct': pct_df, 'n': n_df, 'base': base}
