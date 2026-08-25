@@ -333,7 +333,12 @@ def _render_condition_review(entries: list[dict]) -> None:
     )
 
     label_by_id = {e['id']: question_label(e) for e in entries}
-    noted_entries = [e for e in entries if e.get('n_note', '').strip()]
+    # FA設問は集計軸になれず（gridable_questions参照）、前提条件（condition_entry_id/
+    # condition_values）が対象設問として参照されることが無いため、n_noteがあっても
+    # 候補から除外する（2026-08-26、実データで「分岐セクション内のFA follow-up設問まで
+    # 前提条件の設定対象になっている」という指摘を受けて対応——core/form_html.pyがn_noteを
+    # 同じセクション内の設問全てに引き継ぐよう変更した際に、湧いて出た副作用）。
+    noted_entries = [e for e in gate_candidates if e.get('n_note', '').strip()]
     if not noted_entries:
         st.caption('「n変化」列にメモがある設問はありません。')
     for entry in noted_entries:
