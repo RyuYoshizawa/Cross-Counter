@@ -35,6 +35,7 @@ from core.cross_plan import gridable_questions, question_label
 from core.question_definition import FORMAT_MA, match_to_raw_columns
 
 _TOTAL_LABEL = '全体'
+_UNANSWERED_LABEL = '未回答'
 
 
 def _entry_to_raw_column(entries: list[dict], columns: list[str]) -> dict[str, str]:
@@ -62,9 +63,13 @@ def run_cross_plan(df: pd.DataFrame, entries: list[dict], columns: list[str],
     'ai_comment'}）を実行する。対応するRAW列が見つからない設問はスキップし、理由をissuesに積む。
     戻り値: (results, issues)。resultsの各要素:
       GT行:   {'is_gt': True, 'attr_id': None, 'target_id', 'attr_label': 'GT', 'target_label',
-                'graph', 'ai_comment': bool, 'base': int, 'table': DataFrame}
+                'graph', 'ai_comment': bool, 'base': int, 'unanswered': int, 'table': DataFrame}
       クロス行: {'is_gt': False, 'attr_id', 'target_id', 'attr_label', 'target_label', 'graph',
-                'ai_comment': bool, 'pct': DataFrame, 'n': DataFrame, 'base': {属性ラベル: int}}
+                'ai_comment': bool, 'pct': DataFrame, 'n': DataFrame, 'base': {属性ラベル: int},
+                'unanswered': {属性ラベル: int}}
+    unanswered（実装済み、2026-08-25）は、対象設問が空欄だった件数——母数（base）には
+    含まれない「未回答」の件数を画面・Excelの表に「全体」列/行の直前として追加表示するために
+    使う（core.aggregate.cross_tabulationのdocstring参照）。
     """
     entry_to_col = _entry_to_raw_column(entries, columns)
     by_id = {e['id']: e for e in entries}
@@ -92,7 +97,8 @@ def run_cross_plan(df: pd.DataFrame, entries: list[dict], columns: list[str],
             results.append({
                 'is_gt': True, 'attr_id': None, 'target_id': row['target'],
                 'attr_label': 'GT', 'target_label': row['target_label'], 'graph': row.get('graph', ''),
-                'ai_comment': row.get('ai_comment', True), 'base': base, 'table': table,
+                'ai_comment': row.get('ai_comment', True), 'base': base,
+                'unanswered': len(df[target_col]) - base, 'table': table,
             })
             continue
 
@@ -114,6 +120,7 @@ def run_cross_plan(df: pd.DataFrame, entries: list[dict], columns: list[str],
             'is_gt': False, 'attr_id': row['attr'], 'target_id': row['target'],
             'attr_label': row['attr_label'], 'target_label': row['target_label'], 'graph': row.get('graph', ''),
             'ai_comment': row.get('ai_comment', True), 'pct': cross['pct'], 'n': cross['n'], 'base': cross['base'],
+            'unanswered': cross['unanswered'],
         })
 
     return results, issues
@@ -127,7 +134,8 @@ def run_triple_cross(df: pd.DataFrame, entries: list[dict], columns: list[str],
     既に確定操作時に警告済みのため、ここでは単に無視する）。
     戻り値: (results, issues)。resultsの各要素:
       {'attr_large_label', 'attr_mid_label', 'target_label', 'pct': DataFrame（MultiIndex行）,
-       'n': DataFrame（同形状）, 'base': {(属性大, 属性中): int}}
+       'n': DataFrame（同形状）, 'base': {(属性大, 属性中): int},
+       'unanswered': {(属性大, 属性中): int}}
     """
     questions = gridable_questions(entries)
     by_label = {question_label(q): q for q in questions}
@@ -176,7 +184,7 @@ def run_triple_cross(df: pd.DataFrame, entries: list[dict], columns: list[str],
         )
         results.append({
             'attr_large_label': large_label, 'attr_mid_label': mid_label, 'target_label': target_label_in,
-            'pct': cross['pct'], 'n': cross['n'], 'base': cross['base'],
+            'pct': cross['pct'], 'n': cross['n'], 'base': cross['base'], 'unanswered': cross['unanswered'],
         })
 
     return results, issues
@@ -200,9 +208,12 @@ def run_list_cross(df: pd.DataFrame, entries: list[dict], columns: list[str],
     戻り値: (groups, issues)。groupsの各要素:
       {'target_id', 'target_label', 'target_labels'（原順・その他バケット込み）,
        'overall_pct': {ラベル: float}, 'overall_n': {ラベル: int}, 'overall_base': int,
+       'overall_unanswered': int,
        'attrs': [{'attr_id', 'attr_label', 'categories': [
-           {'label', 'pct': {ラベル: float}, 'n': {ラベル: int}, 'base': int}
+           {'label', 'pct': {ラベル: float}, 'n': {ラベル: int}, 'base': int, 'unanswered': int}
        ]}]}
+    unanswered/overall_unanswered（実装済み、2026-08-25）はcross_tabulationのunanswered
+    （母数に含まれない未回答の件数）をそのまま引き継いだもの。
     """
     questions = gridable_questions(entries)
     by_label = {question_label(q): q for q in questions}
@@ -232,6 +243,7 @@ def run_list_cross(df: pd.DataFrame, entries: list[dict], columns: list[str],
         overall_pct: dict[str, float] | None = None
         overall_n: dict[str, int] | None = None
         overall_base = 0
+        overall_unanswered = 0
 
         for attr_label_in in attrs_in:
             attr_entry = by_label.get(attr_label_in)
@@ -252,15 +264,20 @@ def run_list_cross(df: pd.DataFrame, entries: list[dict], columns: list[str],
                 overall_pct = cross['pct'].loc[_TOTAL_LABEL].drop(_TOTAL_LABEL).to_dict()
                 overall_n = cross['n'].loc[_TOTAL_LABEL].drop(_TOTAL_LABEL).to_dict()
                 overall_base = cross['base'][_TOTAL_LABEL]
+                overall_unanswered = cross['unanswered'][_TOTAL_LABEL]
 
+            # 属性設問そのものが空欄だった回答者の分布（'未回答'カテゴリ）も、実在のカテゴリと
+            # 同列に末尾へ追加する（cross_tabulationが既に計算済みの行をそのまま使う、
+            # 2026-08-25追加）。
             categories = [
                 {
                     'label': cat,
                     'pct': cross['pct'].loc[cat].drop(_TOTAL_LABEL).to_dict(),
                     'n': cross['n'].loc[cat].drop(_TOTAL_LABEL).to_dict(),
                     'base': cross['base'][cat],
+                    'unanswered': cross['unanswered'][cat],
                 }
-                for cat in attr_labels
+                for cat in [*attr_labels, _UNANSWERED_LABEL]
             ]
             attrs.append({'attr_id': attr_entry['id'], 'attr_label': attr_label_in, 'categories': categories})
 
@@ -271,6 +288,7 @@ def run_list_cross(df: pd.DataFrame, entries: list[dict], columns: list[str],
             'target_id': target_entry['id'], 'target_label': target_label_in,
             'target_labels': all_target_labels,
             'overall_pct': overall_pct, 'overall_n': overall_n, 'overall_base': overall_base,
+            'overall_unanswered': overall_unanswered,
             'attrs': attrs,
         })
 
