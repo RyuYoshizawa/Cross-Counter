@@ -174,17 +174,13 @@ def _render_raw_upload(api_key: str) -> None:
     _render_raw_data_check）で描画のたびに毎回判定する設計に変更した。RAWアップロード自体は
     常にその場で即確定する、他の項目と同じシンプルな挙動に戻している。
 
-    **設問定義表が無いとRAWをアップロードできない（実装済み、2026-08-25）**: 設問定義表の
-    作成はRAWデータの回答パターンに一切頼らない設計（フォームHTML/PDFのみから作る、
-    core/form_html.py・core/form_pdf.py参照）だが、「必須未回答候補」（タブ1のRAWデータ確認、
-    core.cleaning.find_missing_required_candidates）は設問定義の「必」マークを使って判定する
-    ため、設問定義が無い状態でRAWを取り込んでも必須未回答の検出ができない。取り込み順を
-    「設問定義→RAW」に固定した方が確実という判断（ユーザーとの合意事項）。
+    **設問定義表が無くてもRAWをアップロードできる（2026-08-25、一時的にブロックしていたが撤回）**:
+    「必須未回答候補」機能（設問定義の「必」マークが無いと判定できないため、取り込み順を
+    「設問定義→RAW」に固定していた）はヘビーだと判断され廃止した（分岐する必須設問ごとに
+    前提条件を個別設定しないと誤検出が絶えないため）。この機能が唯一の存在理由だったため、
+    RAWアップロードのブロックも撤回し、アップロード順に依存しない元の設計（form-vs-RAW、
+    2026-08-22/23）に戻した。
     """
-    if not st.session_state.get('question_definition'):
-        st.sidebar.info('先にアンケートフォームデータ（HTML/PDF）から設問定義表を作成してください。')
-        return
-
     uploaded = st.sidebar.file_uploader(
         'RAWデータファイル（CSV/Excel）', type=['csv', 'xlsx', 'xls'], key='raw_uploader',
         help='Googleフォームのエクスポート形式（1行目=設問文、2行目以降=回答者ごとの行）を想定しています。',

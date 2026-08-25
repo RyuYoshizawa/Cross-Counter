@@ -13,7 +13,7 @@ import pandas as pd
 import streamlit as st
 
 import llm_client
-from core.cleaning import find_blank_response_candidates, find_missing_required_candidates, find_mojibake_candidates
+from core.cleaning import find_blank_response_candidates, find_mojibake_candidates
 from core.cross_plan import gridable_questions, question_label
 from core.form_html import SHORT_LABEL_MODEL, parse_form_html, propose_short_labels
 from core.form_pdf import extract_pdf_text, propose_question_definitions
@@ -193,12 +193,17 @@ def _preceding_gridable(entries: list[dict], target_id: str) -> dict | None:
 
 def _render_condition_editor(entry: dict, entries: list[dict], gate_candidates: list[dict],
                               label_by_id: dict[str, str], key_prefix: str,
-                              default_on: bool = False) -> None:
+                              default_on: bool = False, checkbox_label: str | None = None,
+                              help_text: str | None = None) -> None:
     """
-    entry1件分の前提条件チェックボックス＋ゲート設問・対象値の選択UI。entryを直接書き換える。
+    entry1件分の前提条件チェックボックス＋ゲート設問・対象値の選択UIをコンパクトな2行構成
+    （1行目: チェックボックス（ラベル＝対象設問名）、2行目: ゲート設問＋対象回答を横並び）で
+    表示する（実装済み、2026-08-25。当初は縦積みで冗長という指摘を受け整理）。entryを直接
+    書き換える。
     """
     is_on = st.checkbox(
-        '母数・未回答・％の計算に反映する', value=default_on, key=f'{key_prefix}_on_{entry["id"]}',
+        checkbox_label or label_by_id[entry['id']], value=default_on,
+        key=f'{key_prefix}_on_{entry["id"]}', help=help_text,
     )
     if not is_on:
         entry['condition_entry_id'] = None
@@ -216,21 +221,25 @@ def _render_condition_editor(entry: dict, entries: list[dict], gate_candidates: 
     keys_list = list(gate_keys.keys())
     default_gate_id = entry.get('condition_entry_id') or (_preceding_gridable(entries, entry['id']) or {}).get('id')
     default_key = next((k for k, e in gate_keys.items() if e['id'] == default_gate_id), None)
-    gate_key = st.selectbox(
-        '前提条件となる設問（既定は直前の設問）', keys_list,
-        index=keys_list.index(default_key) if default_key else 0, key=f'{key_prefix}_gate_{entry["id"]}',
-    )
+
+    col1, col2 = st.columns(2)
+    with col1:
+        gate_key = st.selectbox(
+            '前提条件となる設問', keys_list, index=keys_list.index(default_key) if default_key else 0,
+            key=f'{key_prefix}_gate_{entry["id"]}', label_visibility='collapsed',
+        )
     gate_entry = gate_keys[gate_key]
 
     option_texts = [o['text'] for o in gate_entry['options']]
     default_values = entry.get('condition_values', []) if entry.get('condition_entry_id') == gate_entry['id'] else []
-    selected_values = st.multiselect(
-        '対象とする回答（複数選択可）', option_texts, default=default_values, key=f'{key_prefix}_values_{entry["id"]}',
-    )
+    with col2:
+        selected_values = st.multiselect(
+            '対象とする回答', option_texts, default=default_values,
+            key=f'{key_prefix}_values_{entry["id"]}', label_visibility='collapsed',
+            placeholder='対象とする回答を選択',
+        )
     entry['condition_entry_id'] = gate_entry['id'] if selected_values else None
     entry['condition_values'] = selected_values
-    if not selected_values:
-        st.caption('対象とする回答を1つ以上選ぶと反映されます。')
 
 
 def _render_condition_review(entries: list[dict]) -> None:
@@ -238,9 +247,9 @@ def _render_condition_review(entries: list[dict]) -> None:
     分岐（スキップロジック）がある設問向けの前提条件設定（SPEC 5.4.3、2026-08-25）。
     「この設問は〈設問A〉が〈値〉の回答者のみが対象」という条件を設問ごとに設定できる。
     設定すると、この設問を対象設問として集計するとき（GT・クロスの対象側・トリプルクロスの
-    対象側・一覧型クロスの対象側）、母数・未回答・％は前提条件を満たす回答者だけを分母に
-    計算される——未設定の設問は今まで通り全回答者が対象（属性として使う場合はこの設定に
-    関わらず対象外、other_bucket等と同じ扱い）。前提条件となる設問自身がさらに前提条件を
+    対象側・一覧型クロスの対象側）、集計表に「回答条件あり」の表示と、本来の対象者数に対する
+    回答率が加わる（5.4.2節）——未設定の設問は今まで通り全回答者が対象（属性として使う場合は
+    この設定に関わらず対象外、other_bucket等と同じ扱い）。前提条件となる設問自身がさらに前提条件を
     持っていても、RAWデータ上は「対象外の回答者は前提設問のセルも空欄のまま」になるため、
     直接の前提設問1段だけを見れば連鎖的な分岐も自動的に正しく絞り込める（再帰的な解決は不要）。
 
@@ -260,9 +269,9 @@ def _render_condition_review(entries: list[dict]) -> None:
     st.markdown('##### 前提条件（分岐条件）の設定')
     st.caption(
         '「n変化」列にメモがある設問（分岐で対象者が絞られる設問）です。チェックを入れて対象の'
-        '回答を選ぶと、母数・未回答・％をその条件を満たす回答者だけで計算します（未チェックの'
-        '設問は今まで通り全回答者を対象に計算します）。前提となる設問は既定で直前の設問を選んで'
-        'いますが、違う場合は選び直せます。'
+        '回答を選ぶと、集計表に回答条件・回答率が表示されます（未チェックの設問は今まで通り'
+        '全回答者を対象に計算します）。ゲート設問は既定で直前の設問——チェックボックスにマウスを'
+        '乗せるとn変化のメモが確認できます。'
     )
 
     label_by_id = {e['id']: question_label(e) for e in entries}
@@ -270,13 +279,11 @@ def _render_condition_review(entries: list[dict]) -> None:
     if not noted_entries:
         st.caption('「n変化」列にメモがある設問はありません。')
     for entry in noted_entries:
-        with st.container(border=True):
-            st.write(f'**{label_by_id[entry["id"]]}**')
-            st.caption(f'n変化のメモ: {entry["n_note"]}')
-            _render_condition_editor(
-                entry, entries, gate_candidates, label_by_id, key_prefix='condition_noted',
-                default_on=bool(entry.get('condition_entry_id')),
-            )
+        _render_condition_editor(
+            entry, entries, gate_candidates, label_by_id, key_prefix='condition_noted',
+            default_on=bool(entry.get('condition_entry_id')),
+            checkbox_label=label_by_id[entry['id']], help_text=f'n変化のメモ: {entry["n_note"]}',
+        )
 
     other_configured = [
         e for e in entries if e.get('condition_entry_id') and not e.get('n_note', '').strip()
@@ -647,7 +654,6 @@ def _render_raw_data_check(columns: list[str], rows: list[dict], raw_filename: s
     st.divider()
     mojibake_candidates = find_mojibake_candidates(df[columns])
     blank_candidates = find_blank_response_candidates(df[columns])
-    required_candidates = find_missing_required_candidates(entries, columns, df)
 
     st.markdown('##### テスト回答削除')
     st.caption(
@@ -696,19 +702,6 @@ def _render_raw_data_check(columns: list[str], rows: list[dict], raw_filename: s
             st.checkbox(f'行{row_id}（{preview}）', value=True, key=f'blank_excl_{row_id}')
 
     st.divider()
-    st.markdown('##### 必須未回答候補')
-    if not required_candidates:
-        st.caption('必須設問が未回答の行は見つかりませんでした。')
-    else:
-        st.caption(
-            f'{len(required_candidates)}件の行で、必須設問への回答が抜けているのが見つかりました。'
-            '除外する行のチェックを確認してください（初期状態は全てチェック済み＝除外）。'
-        )
-        for row_id, labels in required_candidates.items():
-            label = f'行{row_id}（未回答の必須設問: {"、".join(labels)}）'
-            st.checkbox(label, value=True, key=f'required_excl_{row_id}')
-
-    st.divider()
     if st.button('✅ この内容で除外行を確定する', type='primary', key='confirm_exclusions'):
         excluded = set(test_selected_row_ids)
         for row_id in mojibake_candidates:
@@ -716,9 +709,6 @@ def _render_raw_data_check(columns: list[str], rows: list[dict], raw_filename: s
                 excluded.add(row_id)
         for row_id in blank_candidates:
             if st.session_state.get(f'blank_excl_{row_id}', True):
-                excluded.add(row_id)
-        for row_id in required_candidates:
-            if st.session_state.get(f'required_excl_{row_id}', True):
                 excluded.add(row_id)
         st.session_state['excluded_row_ids'] = sorted(excluded)
         st.rerun()
