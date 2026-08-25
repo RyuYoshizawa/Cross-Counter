@@ -18,9 +18,10 @@ from ui.auth import render_logout_button
 _PROJECT_RESET_KEYS = [
     'raw_uploader', '_loaded_raw_file_id', 'raw_columns', 'raw_rows',
     'raw_filename', 'raw_encoding', 'excluded_row_ids',
-    '_native_other_processed_report', '_native_other_dismissed_ids',
+    '_native_other_processed_report',
     '_loaded_project_file_id', 'new_project_name', 'new_project_description',
     'question_definition', 'question_definition_confirmed', 'question_definition_source',
+    'question_definition_replace_uploader', '_loaded_question_definition_replace_id',
     'form_pdf_uploader', '_loaded_form_pdf_file_id', 'form_pdf_bytes', 'form_pdf_name',
     'form_html_uploader', '_loaded_form_html_file_id', 'form_html_bytes', 'form_html_name',
     'cross_grid_df', 'cross_grid_questions_key', 'cross_grid_version', 'cross_table_ai_version',

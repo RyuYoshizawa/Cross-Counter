@@ -17,17 +17,20 @@ from core.cleaning import find_blank_response_candidates, find_mojibake_candidat
 from core.cross_plan import gridable_questions, question_label
 from core.form_html import SHORT_LABEL_MODEL, parse_form_html, propose_short_labels
 from core.form_pdf import extract_pdf_text, propose_question_definitions
+from core.ingest import read_raw_file
 from core.other_text import build_other_text_columns
 from core.question_definition import (
     FORMAT_CHOICES,
     FORMAT_FA,
     FORMAT_MA,
     FORMAT_SA,
+    REVIEW_COLUMNS,
     add_manual_entry,
     apply_review_edits,
     build_consistency_issues,
     build_entries,
     count_invalid_questions,
+    find_review_upload_mismatches,
     find_unmatched_value_entries,
     to_review_dataframe,
 )
@@ -65,6 +68,7 @@ def _render_question_definition(api_key: str) -> None:
     # 集計まで進めた後にタイムスタンプの追加漏れに気づく、という実際の使われ方に合わない
     # 実害があったため、確定状態に関わらず常に表示するよう変更、2026-08-22）。
     _render_manual_entry_form(entries)
+    _render_definition_replace_upload(entries)
     _render_condition_review(entries)
 
     if confirmed:
@@ -174,6 +178,60 @@ def _render_manual_entry_form(entries: list[dict]) -> None:
                 entry_id=entry_id,
             )
             st.rerun()
+
+
+def _render_definition_replace_upload(entries: list[dict]) -> None:
+    """
+    設問定義表を丸ごと差し替えたい場合（大量の短縮設問文・matrix・n変化をExcel等でまとめて
+    編集したい等）向けに、ファイルをアップロードして反映できるようにする。ダウンロードは
+    表（st.data_editor/st.dataframe）の標準ツールバー（画面右上部のダウンロードアイコン）に
+    既にあるため、ここではアップロードのみを提供する。行の追加・削除・並べ替え等でファイルの
+    構成が変わっていた場合、誤った行に値を書き込んでしまわないよう、適用前に
+    find_review_upload_mismatchesで構造の一致を確認し、一致しなければ反映せずアラートを出す。
+    """
+    with st.expander('📤 設問定義表をアップロードして差し替える', expanded=False):
+        st.caption(
+            '表の右上のダウンロードアイコンで出力したファイルを編集し、ここからアップロードすると、'
+            '形式・短縮設問文・短縮選択肢・matrix・n変化をまとめて反映できます'
+            '（ID・設問文・選択肢は変更できません）。行の追加・削除・並べ替え等で構成が変わっている'
+            '場合は、反映せずにアラートを表示します。'
+        )
+        uploaded = st.file_uploader(
+            '設問定義表（CSV/Excel）', type=['csv', 'xlsx', 'xls'], key='question_definition_replace_uploader',
+        )
+        if uploaded is None or uploaded.file_id == st.session_state.get('_loaded_question_definition_replace_id'):
+            return
+        st.session_state['_loaded_question_definition_replace_id'] = uploaded.file_id
+
+        try:
+            df, _ = read_raw_file(uploaded.name, uploaded.read())
+        except Exception as e:
+            st.error(f'読み込みに失敗しました: {e}')
+            return
+
+        missing_cols = [c for c in REVIEW_COLUMNS if c not in df.columns]
+        if missing_cols:
+            st.error(
+                f'必要な列がありません: {", ".join(missing_cols)}。'
+                '設問定義表の右上のダウンロードアイコンで出力したファイルをそのまま編集して'
+                'アップロードしてください。'
+            )
+            return
+
+        issues = find_review_upload_mismatches(entries, df)
+        if issues:
+            st.error(
+                'アップロードした表の構成が現在の設問定義表と一致しないため、反映しませんでした。\n'
+                + '\n'.join(f'- {issue}' for issue in issues)
+            )
+            return
+
+        updated_entries, warnings = apply_review_edits(df[REVIEW_COLUMNS], entries)
+        st.session_state['question_definition'] = updated_entries
+        if warnings:
+            st.session_state['_question_definition_warnings'] = warnings
+        st.success('アップロードした内容を設問定義表に反映しました。')
+        st.rerun()
 
 
 def _preceding_gridable(entries: list[dict], target_id: str) -> dict | None:
@@ -444,6 +502,29 @@ def _render_pdf_import(api_key: str) -> None:
     st.rerun()
 
 
+def _add_other_text_columns(other_columns: dict[str, pd.Series]) -> None:
+    """
+    その他自由記述として抽出した列をRAWデータの最右に追加し、対応するFA設問定義も新設する
+    共通処理（元のRAW列・値は変更しない）。手動追加ボタン・確認ダイアログ「はい」・再アップロード後の
+    自動再抽出の3箇所から使う。
+    """
+    rows = st.session_state.get('raw_rows', [])
+    for name, series in other_columns.items():
+        values = series.tolist()
+        for row, value in zip(rows, values):
+            row[name] = value
+    st.session_state['raw_columns'] = st.session_state.get('raw_columns', []) + list(other_columns.keys())
+    st.session_state['raw_rows'] = rows
+
+    updated_entries = st.session_state.get('question_definition', [])
+    for name in other_columns:
+        updated_entries = add_manual_entry(
+            updated_entries, question_text=name, format=FORMAT_FA,
+            short_question=name, option_texts=[], at_start=False,
+        )
+    st.session_state['question_definition'] = updated_entries
+
+
 def _render_other_text_extraction(columns: list[str], df: pd.DataFrame, entries: list[dict]) -> None:
     """
     SA/MA設問の「選択肢一覧に無い値」（Googleフォーム標準の「その他」自由記述の可能性がある値）を
@@ -467,22 +548,7 @@ def _render_other_text_extraction(columns: list[str], df: pd.DataFrame, entries:
         '自動的に追加するため、整合性チェックに「対応する設問定義が見つかりません」と出ることはありません。'
     )
     if st.button('➕ その他自由記述をRAWデータに追加する', key='extract_other_text_button'):
-        rows = st.session_state.get('raw_rows', [])
-        for name, series in new_columns.items():
-            values = series.tolist()
-            for row, value in zip(rows, values):
-                row[name] = value
-        st.session_state['raw_columns'] = st.session_state.get('raw_columns', []) + list(new_columns.keys())
-        st.session_state['raw_rows'] = rows
-
-        updated_entries = st.session_state.get('question_definition', [])
-        for name in new_columns:
-            updated_entries = add_manual_entry(
-                updated_entries, question_text=name, format=FORMAT_FA,
-                short_question=name, option_texts=[], at_start=False,
-            )
-        st.session_state['question_definition'] = updated_entries
-
+        _add_other_text_columns(new_columns)
         st.success(f'{len(new_columns)}件の列と、対応する設問定義（FA）を追加しました。')
         st.rerun()
 
@@ -522,38 +588,66 @@ def _render_other_bucket_review(columns: list[str], df: pd.DataFrame, entries: l
 
 def _pending_native_other_entries(entries: list[dict], columns: list[str], df: pd.DataFrame) -> list[dict]:
     """
-    has_native_other=Trueの設問のうち、その他自由記述の抽出（RAWデータへの列追加）がまだ
-    行われていない（かつユーザーが今回のセッションで「いいえ」を選んでいない）ものを返す。
-    アップロード順（フォーム→RAW／RAW→フォーム／ほぼ同時）に関わらず判定できるよう、
-    「RAWデータへの列追加が済んでいるか」という状態そのもので判定する（RAWアップロード時の
-    1回限りの判定だと、フォームデータとRAWデータをほぼ同時にアップロードした場合に判定が
-    抜けてしまう実例が見つかったため、2026-08-23に一度限りの判定から常時判定に設計変更した）。
+    has_native_other=Trueの設問のうち、まだ「その他自由記述を処理するかどうか」を人が決めて
+    いない（native_other_processed/native_other_dismissedのいずれも立っていない）ものを返す。
+    この決定は設問定義（プロジェクトデータ）自体に恒久的に記録する——以前はRAW列の有無
+    （st.session_state['raw_columns']にその他自由記述列が存在するか）で「処理済みか」を
+    判定していたが、生きている調査でRAWデータを再アップロードする（回答が増えるたびに
+    エクスポートし直す）運用では、その都度raw_columnsが読み込みファイルの列で丸ごと
+    置き換わり、既に追加した列が消えるため、「はい」で一度処理した設問でも再アップロードの
+    たびに確認ダイアログが再び現れ続けてしまう不具合が実データで見つかった（2026-08-26）。
+    決定を設問定義側に持たせることでRAWの再アップロードに影響されなくなる。処理済み設問の
+    再抽出（RAWが更新されて新しい自由記述が増えた場合の追従）自体は
+    _reapply_processed_native_otherが確認なしで行う。
     """
-    native_entries = [e for e in entries if e.get('has_native_other')]
-    if not native_entries:
+    candidates = [
+        e for e in entries
+        if e.get('has_native_other') and not e.get('native_other_processed') and not e.get('native_other_dismissed')
+    ]
+    if not candidates:
         return []
-    existing = set(st.session_state.get('raw_columns', []))
-    dismissed = st.session_state.get('_native_other_dismissed_ids', set())
     pending = []
-    for entry in native_entries:
-        if entry['id'] in dismissed:
-            continue
-        entry_columns = build_other_text_columns(df, [entry], columns)
-        if any(name not in existing for name in entry_columns):
+    for entry in candidates:
+        if build_other_text_columns(df, [entry], columns):
             pending.append(entry)
     return pending
+
+
+def _reapply_processed_native_other(entries: list[dict], columns: list[str], df: pd.DataFrame) -> bool:
+    """
+    native_other_processed=True（＝過去に「はい」で処理済み）の設問のうち、抽出済み列が現在の
+    RAWデータに存在しないものを検出し、確認なしで自動的に再抽出・再追加する。RAWデータの
+    再アップロードで列が失われるケース、および再アップロードで新たに増えた自由記述回答を
+    拾うケースの両方をこれで扱う——「はい」は設問ごとの恒久的な決定として扱い、同じ確認を
+    繰り返さない（_pending_native_other_entries参照）。列を追加した場合はTrueを返す
+    （呼び出し側はこの回のcolumns/dfが古くなるためst.rerun()すること）。
+    """
+    processed_entries = [e for e in entries if e.get('has_native_other') and e.get('native_other_processed')]
+    if not processed_entries:
+        return False
+    other_columns = build_other_text_columns(df, processed_entries, columns)
+    if not other_columns:
+        return False
+    existing = set(st.session_state.get('raw_columns', []))
+    new_columns = {name: series for name, series in other_columns.items() if name not in existing}
+    if not new_columns:
+        return False
+    _add_other_text_columns(new_columns)
+    return True
 
 
 def _render_native_other_confirm(pending_entries: list[dict], columns: list[str], df: pd.DataFrame) -> None:
     """
     Googleフォーム標準の「その他」インライン自由記述（ラジオボタン＋自由記述欄が一体になった
-    UI）が使われている設問のうち、まだ処理していないものがある場合の確認画面（SPEC 5.4.1、
-    2026-08-23）。この形式の回答は選択肢一覧のどれとも一致しないため、確認なしに黙って処理
-    してしまうと不整合の原因が分かりにくい——ユーザーの実際のフォームで根本原因が判明した
-    のを機に設けた。「はい」を押すと、その他自由記述の抽出・FA設問の新設（core/other_text.py、
-    既存の仕組み）を実行する。「いいえ」を押すとこのセッション中はこれらの設問について再度
-    確認しない（対象設問として集計する際の「その他」への自動集計自体はother_bucket決定に
-    従って引き続き正しく行われるため、後回しにしても集計の正しさに影響は無い——あとから
+    UI）が使われている設問のうち、まだ処理するかどうかを決めていないものがある場合の確認画面
+    （SPEC 5.4.1、2026-08-23）。この形式の回答は選択肢一覧のどれとも一致しないため、確認なしに
+    黙って処理してしまうと不整合の原因が分かりにくい——ユーザーの実際のフォームで根本原因が
+    判明したのを機に設けた。「はい」を押すと、その他自由記述の抽出・FA設問の新設
+    （core/other_text.py、既存の仕組み）を実行し、この設問については以後確認しない
+    （native_other_processed=True、RAWデータを再アップロードしても再抽出のみ自動で追従する）。
+    「いいえ」を押すとこの設問については今後も確認しない（native_other_dismissed=True。
+    対象設問として集計する際の「その他」への自動集計自体はother_bucket決定に従って引き続き
+    正しく行われるため、後回しにしても集計の正しさに影響は無い——あとから
     「その他自由記述の列を追加する」ボタンで手動でも処理できる）。
     """
     labels = [e['short_question'] or e['question_text'] for e in pending_entries]
@@ -574,33 +668,22 @@ def _render_native_other_confirm(pending_entries: list[dict], columns: list[str]
             st.rerun()
     with col_no:
         if st.button('❌ いいえ、今は処理しない', key='confirm_native_other_no', width='stretch'):
-            dismissed = st.session_state.get('_native_other_dismissed_ids', set())
-            st.session_state['_native_other_dismissed_ids'] = dismissed | {e['id'] for e in pending_entries}
+            for entry in pending_entries:
+                entry['native_other_dismissed'] = True
             st.rerun()
 
 
 def _apply_native_other_processing(native_entries: list[dict], columns: list[str], df: pd.DataFrame) -> None:
-    """確認「はい」後の処理。その他自由記述の抽出・FA設問の新設を行う（RAWデータは変更しない）。"""
+    """確認「はい」後の処理。その他自由記述の抽出・FA設問の新設を行い、対象設問を処理済みとして記録する。"""
+    for entry in native_entries:
+        entry['native_other_processed'] = True
+
     other_columns = build_other_text_columns(df, native_entries, columns)
     if not other_columns:
         st.session_state['_native_other_processed_report'] = []
         return
 
-    rows = st.session_state['raw_rows']
-    for name, series in other_columns.items():
-        values = series.tolist()
-        for row, value in zip(rows, values):
-            row[name] = value
-    st.session_state['raw_columns'] = st.session_state['raw_columns'] + list(other_columns.keys())
-    st.session_state['raw_rows'] = rows
-
-    updated_entries = st.session_state.get('question_definition', [])
-    for name in other_columns:
-        updated_entries = add_manual_entry(
-            updated_entries, question_text=name, format=FORMAT_FA,
-            short_question=name, option_texts=[], at_start=False,
-        )
-    st.session_state['question_definition'] = updated_entries
+    _add_other_text_columns(other_columns)
     st.session_state['_native_other_processed_report'] = list(other_columns.keys())
 
 
@@ -628,6 +711,9 @@ def _render_raw_data_check(columns: list[str], rows: list[dict], raw_filename: s
 
     df = pd.DataFrame(rows)
     entries = st.session_state.get('question_definition', [])
+
+    if _reapply_processed_native_other(entries, columns, df):
+        st.rerun()
 
     pending_entries = _pending_native_other_entries(entries, columns, df)
     if pending_entries:

@@ -220,17 +220,34 @@ def _render_list_cross(questions: list[dict]) -> None:
         st.session_state['list_cross_attrs'] = updated_attrs
 
     stored_targets = st.session_state.get('list_cross_targets') or []
+    all_labels = [question_label(q) for q in questions]
+    default_all_mode = bool(all_labels) and set(stored_targets) == set(all_labels)
     with target_col:
         st.markdown('**対象設問（表頭、1つにつき1表）**')
-        updated_targets = []
-        for i in range(_LIST_CROSS_SLOTS):
-            value = stored_targets[i] if i < len(stored_targets) else ''
-            target = st.selectbox(
-                f'対象設問{i + 1}', choices, format_func=format_func,
-                index=_choice_index(choices, value), key=f'list_cross_target_{i}',
-            )
-            updated_targets.append(target)
-        st.session_state['list_cross_targets'] = updated_targets
+        target_all_mode = st.checkbox(
+            '全質問（すべての設問を対象に集計する）', value=default_all_mode, key='list_cross_target_all',
+            help='チェックすると、下の個別指定に関わらず全ての設問を対象設問として集計します'
+                 '（個別の指定は解除されます）。',
+        )
+        if target_all_mode:
+            st.session_state['list_cross_targets'] = all_labels
+            st.caption(f'{len(all_labels)}件の設問すべてを対象設問として集計します。')
+            for i in range(_LIST_CROSS_SLOTS):
+                st.session_state[f'list_cross_target_{i}'] = _UNSELECTED
+                st.selectbox(
+                    f'対象設問{i + 1}', choices, format_func=format_func,
+                    key=f'list_cross_target_{i}', disabled=True,
+                )
+        else:
+            updated_targets = []
+            for i in range(_LIST_CROSS_SLOTS):
+                value = stored_targets[i] if i < len(stored_targets) else ''
+                target = st.selectbox(
+                    f'対象設問{i + 1}', choices, format_func=format_func,
+                    index=_choice_index(choices, value), key=f'list_cross_target_{i}',
+                )
+                updated_targets.append(target)
+            st.session_state['list_cross_targets'] = updated_targets
 
 
 def _choice_index(choices: list[str], value: str) -> int:

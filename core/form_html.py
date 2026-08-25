@@ -143,15 +143,28 @@ def parse_form_html(html_text: str) -> tuple[list[dict], list[str]]:
     for marker in markers:
         if marker.get('jsname') == _QUESTION_CARD_JSNAME:
             question, issue = _parse_question_card(marker, pending_note)
-            pending_note = ''
             if issue:
                 warnings.append(issue)
                 continue
             if question:
                 questions.append(question)
         else:
+            # 実データのHTML構造上、1セクションにつき必ず「セクション タイトル（省略可）」→
+            # 「説明（省略可）」の順で1組現れ、分岐の説明文言はどちらか一方（実データではタイトル
+            # 側）に入る。この説明文言は、次の「セクション タイトル」（＝次のセクションの開始）が
+            # 現れるまでの「同じセクション内の設問すべて」に適用される（Googleフォームのページ
+            # 区切り＝セクション単位で分岐先が決まるため）。以前は質問カードを1件処理するたびに
+            # pending_noteを空にしていたため、同じ分岐セクション内で2問目以降の設問の前提条件
+            # （n変化）を見落とすケースが実データで見つかった（2026-08-26）。
+            # 「セクション タイトル」で新セクションの開始として一度リセットし（該当文言が無ければ
+            # 空に）、直後の「説明」はリセットせず該当文言がある場合のみ上書きする——空の「説明」
+            # マーカーが必ず後に続くため、単純に「該当文言が無ければ毎回空に戻す」実装だと
+            # タイトル側でせっかく拾った文言を直後の空の説明マーカーが消してしまう。
             text = fix_known_font_glitches(marker.get_text(' ', strip=True))
-            if text and any(hint in text for hint in _SKIP_NOTE_HINTS):
+            has_hint = bool(text) and any(hint in text for hint in _SKIP_NOTE_HINTS)
+            if marker.get('aria-label') == _SECTION_TITLE_LABEL:
+                pending_note = text if has_hint else ''
+            elif has_hint:
                 pending_note = text
 
     return questions, warnings

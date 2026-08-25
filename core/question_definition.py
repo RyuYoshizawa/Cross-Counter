@@ -95,6 +95,8 @@ def build_entries(llm_questions: list[dict]) -> list[dict]:
             'matrix': '',
             'other_bucket': True,
             'has_native_other': has_native_other,
+            'native_other_processed': False,
+            'native_other_dismissed': False,
             'required': bool(q.get('required', False)),
             'condition_entry_id': None,
             'condition_values': [],
@@ -129,6 +131,8 @@ def add_manual_entry(entries: list[dict], question_text: str, format: str, short
         'matrix': '',
         'other_bucket': True,
         'has_native_other': False,
+        'native_other_processed': False,
+        'native_other_dismissed': False,
         'required': False,
         'condition_entry_id': None,
         'condition_values': [],
@@ -236,6 +240,59 @@ def apply_review_edits(edited_df: pd.DataFrame, entries: list[dict]) -> tuple[li
             current_entry['options'][option_index]['short'] = str(row.get('短縮選択肢') or '').strip()
             option_index += 1
     return list(entries_by_id.values()), warnings
+
+
+def find_review_upload_mismatches(entries: list[dict], uploaded_df: pd.DataFrame) -> list[str]:
+    """
+    設問定義表をファイルから丸ごと差し替える機能（タブ1「📤 設問定義表をアップロードして
+    差し替える」）向け。アップロードされた表（to_review_dataframeと同じ縦持ち形式）の行構成が
+    現在の設問定義表と一致しているかを、適用前に確認する。ID列（設問ヘッダー行かどうかの
+    目印）の並び、および各設問ヘッダーに続く選択肢行の件数が完全に一致しない場合、行の追加・
+    削除・並べ替えなどで構造そのものが変わっている可能性が高く、そのままapply_review_editsに
+    渡すと（ID一致・順序対応の選択肢行という前提で動くため）誤った行に短縮設問文・短縮選択肢等を
+    書き込んでしまう恐れがある。問題点を一覧で返す（空リストなら一致、適用してよい）。
+    """
+    issues: list[str] = []
+
+    uploaded_ids: list[str] = []
+    option_counts: dict[str, int] = {}
+    current_id = None
+    for _, row in uploaded_df.iterrows():
+        rid = str(row.get('ID') or '').strip()
+        if rid:
+            uploaded_ids.append(rid)
+            option_counts[rid] = 0
+            current_id = rid
+        elif current_id is not None:
+            option_counts[current_id] += 1
+
+    current_ids = [e['id'] for e in entries]
+
+    if uploaded_ids != current_ids:
+        missing = [i for i in current_ids if i not in uploaded_ids]
+        extra = [i for i in uploaded_ids if i not in current_ids]
+        detail = ''
+        if missing:
+            detail += f' 現在の設問定義表にあってアップロードした表に無いID: {", ".join(missing)}。'
+        if extra:
+            detail += f' アップロードした表にあって現在の設問定義表に無いID: {", ".join(extra)}。'
+        issues.append(
+            'アップロードした表の設問（ID列）の並びが、現在の設問定義表と一致しません。'
+            '行の追加・削除・並べ替えがあった可能性があります。' + detail
+        )
+        return issues  # ID列の並び自体が違う場合、選択肢の行数比較は意味が無いためここで終える
+
+    for entry in entries:
+        expected = len(entry['options'])
+        actual = option_counts.get(entry['id'], 0)
+        if expected != actual:
+            label = entry['short_question'] or entry['question_text']
+            title = label if len(label) <= 30 else f'{label[:30]}…'
+            issues.append(
+                f'「{entry["id"]} {title}」の選択肢の行数が一致しません'
+                f'（現在の設問定義表: {expected}行、アップロードした表: {actual}行）。'
+            )
+    return issues
 
 
 def _normalize_question_text(text: str) -> str:
