@@ -35,7 +35,8 @@ FORMAT_CHOICES = [FORMAT_SA, FORMAT_MA, FORMAT_FA]
 # 実物のスクリーンショットから根本原因を特定）。
 _NATIVE_OTHER_OPTION_TEXTS = ('その他:', 'その他：')
 
-REVIEW_COLUMNS = ['ID', '形式', '短縮設問文', '短縮選択肢', '設問文', '選択肢', 'matrix', 'n変化']
+REVIEW_COLUMNS = ['ID', '必', '形式', '短縮設問文', '短縮選択肢', '設問文', '選択肢', 'matrix', 'n変化']
+_REQUIRED_MARK = '※'
 
 
 def count_invalid_questions(llm_questions: list) -> int:
@@ -85,6 +86,7 @@ def build_entries(llm_questions: list[dict]) -> list[dict]:
             'matrix': '',
             'other_bucket': True,
             'has_native_other': has_native_other,
+            'required': bool(q.get('required', False)),
         })
     _assign_matrix_groups(entries)
     return entries
@@ -116,6 +118,7 @@ def add_manual_entry(entries: list[dict], question_text: str, format: str, short
         'matrix': '',
         'other_bucket': True,
         'has_native_other': False,
+        'required': False,
     }
     if index is not None:
         position = max(0, min(index, len(entries)))
@@ -169,14 +172,15 @@ def to_review_dataframe(entries: list[dict]) -> pd.DataFrame:
     rows = []
     for entry in entries:
         rows.append({
-            'ID': entry['id'], '形式': entry['format'],
+            'ID': entry['id'], '必': _REQUIRED_MARK if entry.get('required') else '',
+            '形式': entry['format'],
             '短縮設問文': entry['short_question'], '短縮選択肢': '',
             '設問文': entry['question_text'], '選択肢': '',
             'matrix': entry['matrix'], 'n変化': entry['n_note'],
         })
         for opt in entry['options']:
             rows.append({
-                'ID': '', '形式': '', '短縮設問文': '', '短縮選択肢': opt['short'],
+                'ID': '', '必': '', '形式': '', '短縮設問文': '', '短縮選択肢': opt['short'],
                 '設問文': '', '選択肢': opt['text'], 'matrix': '', 'n変化': '',
             })
     # pandas 3.xの既定の文字列dtype（str）だと、st.data_editorでの表示時に空文字列が

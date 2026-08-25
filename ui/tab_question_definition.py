@@ -76,7 +76,10 @@ def _render_question_definition(api_key: str) -> None:
             st.rerun()
         st.dataframe(
             to_review_dataframe(entries), width='stretch', height=500, hide_index=True,
-            column_config={'ID': st.column_config.TextColumn('ID', pinned=True)},
+            column_config={
+                'ID': st.column_config.TextColumn('ID', pinned=True),
+                '必': st.column_config.TextColumn('必', width='small'),
+            },
         )
         return
 
@@ -90,10 +93,15 @@ def _render_question_definition(api_key: str) -> None:
     review_df = to_review_dataframe(entries)
     edited_df = st.data_editor(
         review_df, width='stretch', height=500, hide_index=True, key='question_definition_editor',
-        disabled=['ID', '設問文', '選択肢'],
-        column_config={'ID': st.column_config.TextColumn('ID', pinned=True)},
+        disabled=['ID', '必', '設問文', '選択肢'],
+        column_config={
+            'ID': st.column_config.TextColumn('ID', pinned=True),
+            '必': st.column_config.TextColumn('必', width='small'),
+        },
         # 形式にSelectboxColumnを使うと、同じ表内の他の空欄セルが"None"と表示されてしまう
         # Streamlitの既知の不具合があるため、自由入力＋apply_review_edits側での検証にしている。
+        # 「必」（必須設問マーク）はフォーム自体から読み取った情報で人が編集するものではないため
+        # disabledに含める（2026-08-25、ユーザーとの合意事項）。
     )
 
     col1, col2 = st.columns(2)

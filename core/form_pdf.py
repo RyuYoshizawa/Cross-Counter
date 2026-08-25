@@ -129,7 +129,8 @@ def build_prompt(pdf_text: str) -> str:
 def propose_question_definitions(client, pdf_text: str, model: str) -> list[dict] | None:
     """
     LLMにフォームPDFのテキストから設問定義の初稿を作らせる。
-    戻り値: [{'format','question_text','short_question','options','n_note'}, ...] または失敗時None。
+    戻り値: [{'format','question_text','short_question','options','n_note','required'}, ...]
+    または失敗時None。
     """
     if not pdf_text.strip():
         return []
@@ -137,4 +138,22 @@ def propose_question_definitions(client, pdf_text: str, model: str) -> list[dict
     result = call_llm(client, prompt, QUESTION_DEFINITION_SCHEMA, 'Anthropic', model)
     if not result:
         return None
-    return result.get('questions', [])
+    questions = result.get('questions', [])
+    for q in questions:
+        if isinstance(q, dict):
+            _extract_required_mark(q)
+    return questions
+
+
+def _extract_required_mark(question: dict) -> None:
+    """
+    GoogleフォームのPDF書き出しは、必須設問の設問文の末尾に「*」を付ける
+    （core.question_definition._normalize_question_textが照合用に読み捨てている既知の慣習——
+    ここではその印を読み取ってrequiredフィールドに変換し、設問文からは取り除く）。
+    """
+    text = str(question.get('question_text', '')).rstrip()
+    if text.endswith('*'):
+        question['question_text'] = text.rstrip('*').rstrip()
+        question['required'] = True
+    else:
+        question['required'] = False

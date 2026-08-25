@@ -123,7 +123,7 @@ def parse_form_html(html_text: str) -> tuple[list[dict], list[str]]:
     """
     保存されたフォーム編集画面のHTMLから設問一覧を抽出する。
     戻り値: (questions, warnings)。questionsはcore.form_pdf.propose_question_definitionsの
-    戻り値と同じ形（format/question_text/short_question/options/n_note）で、短縮設問文・
+    戻り値と同じ形（format/question_text/short_question/options/n_note/required）で、短縮設問文・
     短縮選択肢は空文字列のまま返す（呼び出し側でLLMに作らせるか、人が手入力する）。
     """
     soup = BeautifulSoup(html_text, 'html.parser')
@@ -168,9 +168,7 @@ def _parse_question_card(card, pending_note: str) -> tuple[dict | None, str | No
         return None, None
 
     required_el = card.find(attrs={'aria-label': _REQUIRED_LABEL, 'role': 'checkbox'})
-    # 必須フラグ自体はn_noteやFORMAT判定には使わない（設問定義表に必須列は無いため）が、
-    # 将来使う可能性があるので取得だけしておく。
-    _ = required_el.get('aria-checked') if required_el else None
+    required = bool(required_el) and required_el.get('aria-checked') == 'true'
 
     lists = card.find_all(attrs={'role': 'list'})
     if len(lists) == 1:
@@ -192,6 +190,7 @@ def _parse_question_card(card, pending_note: str) -> tuple[dict | None, str | No
         'short_question': '',
         'options': options,
         'n_note': pending_note,
+        'required': required,
     }, None
 
 
