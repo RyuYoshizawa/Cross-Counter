@@ -25,6 +25,18 @@ RAWデータを再スキャンするようなことはしない（当初はこ�
 実データにfind_unmatched_valuesで実在する未対応の値が無ければその他バケット自体を作らない
 （列を静かに省く）だけの軽い事前チェックとして_target_other_label内で行う。属性側は対象外
 ——属性のその他バケット化は現状の要望に含まれないため実装していない。
+
+**設問の前提条件（分岐条件、SPEC 5.4.3、実装済み2026-08-25）**: 分岐（スキップロジック）が
+ある調査では、対象外の回答者のRAWセルが空欄になり、単純に「全サンプル数−有効回答数」で
+未回答を数えると「そもそも聞かれなかった人」まで未回答に含めてしまい、必須設問でも大量の
+未回答が出る異常値になる実害があった（ユーザー提示の実データで確認：必須のMA設問で
+本来ゼロのはずの未回答が1503件になっていた）。各設問定義エントリのcondition_entry_id/
+condition_valuesフィールド（タブ1で設定）に「この設問は〈設問X〉が〈値〉の回答者のみ対象」
+という前提条件を持たせ、対象設問として集計する際（GT・クロス対象側・トリプルクロス対象側・
+一覧型クロス対象側のみ——属性側は対象外、other_bucket等と同じ扱い）、_apply_conditionで
+その条件を満たす行だけに絞ったdfを使って母数・未回答・％を計算する。前提設問自身がさらに
+前提条件を持っていても、対象外の回答者は前提設問のセルも空欄のままRAWに残るため、直接の
+前提設問1段だけを見れば連鎖的な分岐も自動的に正しく絞り込める（再帰的な条件解決は不要）。
 """
 
 from __future__ import annotations
@@ -36,6 +48,7 @@ from core.aggregate import (
     cross_tabulation,
     find_unmatched_values,
     resolve_other_label,
+    series_matches_any,
     simple_tabulation_multi,
     simple_tabulation_single,
     triple_cross_tabulation,
@@ -76,6 +89,28 @@ def _target_other_label(entry: dict, labels: list[str], series: pd.Series,
     return resolve_other_label(labels)
 
 
+def _apply_condition(df: pd.DataFrame, target_entry: dict, by_id: dict[str, dict],
+                      entry_to_col: dict[str, str]) -> tuple[pd.DataFrame, str | None]:
+    """
+    target_entryに前提条件（condition_entry_id/condition_values）が設定されていれば、
+    その条件を満たす行だけに絞ったdfを返す（分岐条件フィルタ、SPEC 5.4.3）。未設定なら
+    dfをそのまま返す。前提設問のRAW列が見つからない等で適用できない場合は、絞り込まずdfを
+    そのまま返し、理由をissueとして返す（戻り値の2つ目、問題なければNone）。
+    """
+    condition_id = target_entry.get('condition_entry_id')
+    condition_values = target_entry.get('condition_values') or []
+    if not condition_id or not condition_values:
+        return df, None
+    condition_entry = by_id.get(condition_id)
+    condition_col = entry_to_col.get(condition_id) if condition_entry else None
+    if condition_entry is None or condition_col is None:
+        label = target_entry.get('short_question') or target_entry.get('question_text')
+        return df, f'「{label}」の前提条件設問に対応するRAW列が見つからないため、前提条件を適用せず全回答者を対象に集計しました。'
+    is_multi = condition_entry['format'] == FORMAT_MA
+    mask = series_matches_any(df[condition_col], condition_values, is_multi)
+    return df[mask], None
+
+
 def run_cross_plan(df: pd.DataFrame, entries: list[dict], columns: list[str],
                     cross_rows: list[dict]) -> tuple[list[dict], list[str]]:
     """
@@ -89,7 +124,10 @@ def run_cross_plan(df: pd.DataFrame, entries: list[dict], columns: list[str],
                 'unanswered': {属性ラベル: int}}
     unanswered（実装済み、2026-08-25）は、対象設問が空欄だった件数——母数（base）には
     含まれない「未回答」の件数を画面・Excelの表に「全体」列/行の直前として追加表示するために
-    使う（core.aggregate.cross_tabulationのdocstring参照）。
+    使う（core.aggregate.cross_tabulationのdocstring参照）。対象設問に前提条件
+    （condition_entry_id/condition_values）が設定されている場合、_apply_conditionでその
+    条件を満たす行だけに絞ったtarget_df（＝分岐で対象外になった回答者を除いた集団）を母数・
+    未回答・％の計算に使う（ファイル冒頭のdocstring参照）。
     """
     entry_to_col = _entry_to_raw_column(entries, columns)
     by_id = {e['id']: e for e in entries}
@@ -105,21 +143,24 @@ def run_cross_plan(df: pd.DataFrame, entries: list[dict], columns: list[str],
             continue
         target_options, target_labels = _option_texts_and_labels(target_entry)
         target_is_multi = target_entry['format'] == FORMAT_MA
-        target_other = _target_other_label(target_entry, target_labels, df[target_col],
+        target_df, condition_issue = _apply_condition(df, target_entry, by_id, entry_to_col)
+        if condition_issue:
+            issues.append(condition_issue)
+        target_other = _target_other_label(target_entry, target_labels, target_df[target_col],
                                             target_options, target_is_multi)
 
         if row['attr'] is None:
-            base = compute_base_count(df[target_col])
+            base = compute_base_count(target_df[target_col])
             table = (
-                simple_tabulation_multi(df[target_col], target_options, target_labels, other_label=target_other)
+                simple_tabulation_multi(target_df[target_col], target_options, target_labels, other_label=target_other)
                 if target_is_multi
-                else simple_tabulation_single(df[target_col], target_options, target_labels, other_label=target_other)
+                else simple_tabulation_single(target_df[target_col], target_options, target_labels, other_label=target_other)
             )
             results.append({
                 'is_gt': True, 'attr_id': None, 'target_id': row['target'],
                 'attr_label': 'GT', 'target_label': row['target_label'], 'graph': row.get('graph', ''),
                 'ai_comment': row.get('ai_comment', True), 'base': base,
-                'unanswered': len(df[target_col]) - base, 'table': table,
+                'unanswered': len(target_df) - base, 'table': table,
             })
             continue
 
@@ -132,7 +173,7 @@ def run_cross_plan(df: pd.DataFrame, entries: list[dict], columns: list[str],
         attr_is_multi = attr_entry['format'] == FORMAT_MA
 
         cross = cross_tabulation(
-            df, attr_col=attr_col, attr_options=attr_options, attr_is_multi=attr_is_multi,
+            target_df, attr_col=attr_col, attr_options=attr_options, attr_is_multi=attr_is_multi,
             target_col=target_col, target_options=target_options, target_is_multi=target_is_multi,
             attr_display_labels=attr_labels, target_display_labels=target_labels,
             target_other_label=target_other,
@@ -160,6 +201,7 @@ def run_triple_cross(df: pd.DataFrame, entries: list[dict], columns: list[str],
     """
     questions = gridable_questions(entries)
     by_label = {question_label(q): q for q in questions}
+    by_id = {e['id']: e for e in entries}
     entry_to_col = _entry_to_raw_column(entries, columns)
 
     results: list[dict] = []
@@ -190,11 +232,14 @@ def run_triple_cross(df: pd.DataFrame, entries: list[dict], columns: list[str],
         mid_options, mid_labels = _option_texts_and_labels(mid_entry)
         target_options, target_labels = _option_texts_and_labels(target_entry)
         target_is_multi = target_entry['format'] == FORMAT_MA
-        target_other = _target_other_label(target_entry, target_labels, df[target_col],
+        target_df, condition_issue = _apply_condition(df, target_entry, by_id, entry_to_col)
+        if condition_issue:
+            issues.append(condition_issue)
+        target_other = _target_other_label(target_entry, target_labels, target_df[target_col],
                                             target_options, target_is_multi)
 
         cross = triple_cross_tabulation(
-            df,
+            target_df,
             attr_large_col=large_col, attr_large_options=large_options,
             attr_large_is_multi=large_entry['format'] == FORMAT_MA,
             attr_mid_col=mid_col, attr_mid_options=mid_options,
@@ -239,6 +284,7 @@ def run_list_cross(df: pd.DataFrame, entries: list[dict], columns: list[str],
     """
     questions = gridable_questions(entries)
     by_label = {question_label(q): q for q in questions}
+    by_id = {e['id']: e for e in entries}
     entry_to_col = _entry_to_raw_column(entries, columns)
 
     attrs_in = [a.strip() for a in list_cross_attrs if a.strip()]
@@ -258,7 +304,10 @@ def run_list_cross(df: pd.DataFrame, entries: list[dict], columns: list[str],
             continue
         target_options, target_labels = _option_texts_and_labels(target_entry)
         target_is_multi = target_entry['format'] == FORMAT_MA
-        target_other = _target_other_label(target_entry, target_labels, df[target_col],
+        target_df, condition_issue = _apply_condition(df, target_entry, by_id, entry_to_col)
+        if condition_issue:
+            issues.append(condition_issue)
+        target_other = _target_other_label(target_entry, target_labels, target_df[target_col],
                                             target_options, target_is_multi)
         all_target_labels = [*target_labels, target_other] if target_other else list(target_labels)
 
@@ -278,7 +327,7 @@ def run_list_cross(df: pd.DataFrame, entries: list[dict], columns: list[str],
             attr_is_multi = attr_entry['format'] == FORMAT_MA
 
             cross = cross_tabulation(
-                df, attr_col=attr_col, attr_options=attr_options, attr_is_multi=attr_is_multi,
+                target_df, attr_col=attr_col, attr_options=attr_options, attr_is_multi=attr_is_multi,
                 target_col=target_col, target_options=target_options, target_is_multi=target_is_multi,
                 attr_display_labels=attr_labels, target_display_labels=target_labels,
                 target_other_label=target_other,

@@ -5,6 +5,10 @@ question_definition.py
 との相互変換を行う。match_to_raw_columns/build_consistency_issuesは、設問定義表とRAWデータの
 列見出しを突き合わせる（SPEC 5.2.3）。find_unmatched_value_entriesは列の中身（値そのもの）を
 突き合わせ、その他自動バケット化（各entryのother_bucketフィールド、SPEC 5.4.1）のレビューに使う。
+各entryのcondition_entry_id/condition_valuesは、分岐（スキップロジック）のある設問向けの
+前提条件（SPEC 5.4.3、この設問を対象設問として集計する場合のみ効く——属性として使う場合は
+他のバケット化系フラグ同様に対象外）。設定・編集はui/tab_question_definition.pyが行い、
+実際にRAWデータへ適用するのはcore/cross_execute.py。
 """
 
 from __future__ import annotations
@@ -87,6 +91,8 @@ def build_entries(llm_questions: list[dict]) -> list[dict]:
             'other_bucket': True,
             'has_native_other': has_native_other,
             'required': bool(q.get('required', False)),
+            'condition_entry_id': None,
+            'condition_values': [],
         })
     _assign_matrix_groups(entries)
     return entries
@@ -119,6 +125,8 @@ def add_manual_entry(entries: list[dict], question_text: str, format: str, short
         'other_bucket': True,
         'has_native_other': False,
         'required': False,
+        'condition_entry_id': None,
+        'condition_values': [],
     }
     if index is not None:
         position = max(0, min(index, len(entries)))

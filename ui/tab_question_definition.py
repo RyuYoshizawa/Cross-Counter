@@ -14,6 +14,7 @@ import streamlit as st
 
 import llm_client
 from core.cleaning import find_mojibake_candidates
+from core.cross_plan import gridable_questions, question_label
 from core.form_html import SHORT_LABEL_MODEL, parse_form_html, propose_short_labels
 from core.form_pdf import extract_pdf_text, propose_question_definitions
 from core.other_text import build_other_text_columns
@@ -64,6 +65,7 @@ def _render_question_definition(api_key: str) -> None:
     # 集計まで進めた後にタイムスタンプの追加漏れに気づく、という実際の使われ方に合わない
     # 実害があったため、確定状態に関わらず常に表示するよう変更、2026-08-22）。
     _render_manual_entry_form(entries)
+    _render_condition_review(entries)
 
     if confirmed:
         st.success(
@@ -172,6 +174,67 @@ def _render_manual_entry_form(entries: list[dict]) -> None:
                 entry_id=entry_id,
             )
             st.rerun()
+
+
+def _render_condition_review(entries: list[dict]) -> None:
+    """
+    分岐（スキップロジック）がある設問向けの前提条件設定（SPEC 5.4.3、2026-08-25）。
+    「この設問は〈設問A〉が〈値〉の回答者のみが対象」という条件を設問ごとに設定できる。
+    設定すると、この設問を対象設問として集計するとき（GT・クロスの対象側・トリプルクロスの
+    対象側・一覧型クロスの対象側）、母数・未回答・％は前提条件を満たす回答者だけを分母に
+    計算される——未設定の設問は今まで通り全回答者が対象（属性として使う場合はこの設定に
+    関わらず対象外、other_bucket等と同じ扱い）。前提条件となる設問自身がさらに前提条件を
+    持っていても、RAWデータ上は「対象外の回答者は前提設問のセルも空欄のまま」になるため、
+    直接の前提設問1段だけを見れば連鎖的な分岐も自動的に正しく絞り込める（再帰的な解決は不要）。
+    """
+    gate_candidates = gridable_questions(entries)
+    if len(gate_candidates) < 1:
+        return
+
+    st.markdown('##### 前提条件（分岐条件）の設定')
+    st.caption(
+        '分岐（スキップロジック）で対象者が絞られる設問は、前の設問の回答で対象者を絞ってから'
+        '母数・未回答・％を計算できます。未設定の設問は今まで通り全回答者を対象に計算します。'
+    )
+
+    label_by_id = {e['id']: question_label(e) for e in entries}
+    configured = [e for e in entries if e.get('condition_entry_id')]
+    if configured:
+        for entry in configured:
+            gate_label = label_by_id.get(entry['condition_entry_id'], '（対応する設問なし）')
+            values = '、'.join(entry.get('condition_values', []))
+            col1, col2 = st.columns([6, 1])
+            with col1:
+                st.write(f'- 「{label_by_id[entry["id"]]}」は「{gate_label}」が「{values}」の場合のみ対象')
+            with col2:
+                if st.button('解除', key=f'condition_clear_{entry["id"]}'):
+                    entry['condition_entry_id'] = None
+                    entry['condition_values'] = []
+                    st.rerun()
+
+    with st.expander('➕ 前提条件を設定する', expanded=False):
+        target_options = {f'{e["id"]}: {label_by_id[e["id"]]}': e['id'] for e in entries}
+        target_key = st.selectbox('対象設問（この条件を適用する設問）', list(target_options.keys()), key='condition_target_select')
+        target_id = target_options[target_key]
+
+        gate_options = {f'{e["id"]}: {label_by_id[e["id"]]}': e for e in gate_candidates if e['id'] != target_id}
+        if not gate_options:
+            st.caption('前提条件に使えるSA/MA設問がありません。')
+            return
+        gate_key = st.selectbox('前提条件となる設問（SA/MAのみ）', list(gate_options.keys()), key='condition_gate_select')
+        gate_entry = gate_options[gate_key]
+
+        option_texts = [o['text'] for o in gate_entry['options']]
+        selected_values = st.multiselect('対象とする回答（複数選択可）', option_texts, key='condition_values_select')
+
+        if st.button('この条件を設定する', key='condition_set_button'):
+            if not selected_values:
+                st.warning('対象とする回答を1つ以上選んでください。')
+            else:
+                target_entry = next(e for e in entries if e['id'] == target_id)
+                target_entry['condition_entry_id'] = gate_entry['id']
+                target_entry['condition_values'] = selected_values
+                st.rerun()
 
 
 def _render_import(api_key: str) -> None:

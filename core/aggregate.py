@@ -49,6 +49,24 @@ def resolve_other_label(existing_labels: list[str], base: str = 'その他') -> 
     return candidate
 
 
+def series_matches_any(series: pd.Series, accepted: list[str], is_multi: bool) -> pd.Series:
+    """
+    設問の前提条件（分岐条件、SPEC 5.4.3）用: seriesの各値が、accepted（前提設問の選択肢
+    テキスト）のいずれかに（正規化しても）一致するかをbool Seriesで返す。is_multi=Trueなら
+    値をMULTI_DELIMで分割し、いずれかの要素が一致すればTrueとする（前提設問がMAの場合）。
+    """
+    norm_accepted = {_normalize_value(a) for a in accepted}
+
+    def _match(raw) -> bool:
+        value = str(raw).strip()
+        if not value:
+            return False
+        parts = [p.strip() for p in value.split(_MULTI_DELIM)] if is_multi else [value]
+        return any(_normalize_value(p) in norm_accepted for p in parts if p)
+
+    return series.apply(_match)
+
+
 def compute_base_count(series: pd.Series) -> int:
     """設問列の母数（％計算の分母）＝空欄でない有効回答数を返す"""
     return int((series.astype(str).str.strip() != '').sum())
