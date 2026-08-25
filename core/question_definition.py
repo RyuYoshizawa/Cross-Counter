@@ -5,14 +5,6 @@ question_definition.py
 との相互変換を行う。match_to_raw_columns/build_consistency_issuesは、設問定義表とRAWデータの
 列見出しを突き合わせる（SPEC 5.2.3）。find_unmatched_value_entriesは列の中身（値そのもの）を
 突き合わせ、その他自動バケット化（各entryのother_bucketフィールド、SPEC 5.4.1）のレビューに使う。
-
-migrated_row_ids/other_followup_entry_id（2026-08-24）はRAWデータ補正機能
-（core/raw_correction.py）専用のフィールド。FA設問側のmigrated_row_idsは、その設問の自由記述が
-実際にアフターコーディングで移設済みの回答者_row_idを記録する。SA/MA設問側の
-other_followup_entry_idは、その設問の「その他自由記述」件数（GT集計）を計算する際に連動させる
-FA設問のidを指す——「主設問の□その他チェックと、別質問への自由記述回答が必ずしも1対1で
-対応しない」調査設計に対応するため、主設問自身のRAW値スキャンではなく連動する別質問の
-未移設人数で数える（core.cross_execute._followup_other_count参照）。
 """
 
 from __future__ import annotations
@@ -93,8 +85,6 @@ def build_entries(llm_questions: list[dict]) -> list[dict]:
             'matrix': '',
             'other_bucket': True,
             'has_native_other': has_native_other,
-            'migrated_row_ids': [],
-            'other_followup_entry_id': None,
         })
     _assign_matrix_groups(entries)
     return entries
@@ -126,8 +116,6 @@ def add_manual_entry(entries: list[dict], question_text: str, format: str, short
         'matrix': '',
         'other_bucket': True,
         'has_native_other': False,
-        'migrated_row_ids': [],
-        'other_followup_entry_id': None,
     }
     if index is not None:
         position = max(0, min(index, len(entries)))
@@ -137,29 +125,6 @@ def add_manual_entry(entries: list[dict], question_text: str, format: str, short
     _renumber_entries(updated)
     _assign_matrix_groups(updated)
     return updated
-
-
-def add_option_to_entry(entries: list[dict], entry_id: str, option_text: str) -> None:
-    """
-    既存entryのoptionsに新しい選択肢を追記する（entriesを直接書き換える）。RAWデータ補正機能
-    （アフターコーディング、core/raw_correction.py）が、FA回答から選択肢化した新しい選択肢名を
-    SA/MA設問の設問定義に登録するために使う——選択肢名・短縮選択肢名は同じ新しい選択肢名を
-    登録する（ユーザーとの合意事項、指示書⑬）。既に同じ選択肢テキストがあれば何もしない
-    （重複追加を防ぐ）。選択肢集合が変わるとマトリクス判定の結果も変わるため、呼び出し後に
-    必ず再計算する。
-    """
-    entry = next((e for e in entries if e['id'] == entry_id), None)
-    if entry is None:
-        return
-    if any(o['text'] == option_text for o in entry['options']):
-        return
-    entry['options'].append({'text': option_text, 'short': option_text})
-    # _assign_matrix_groups は連続する2件以上のグループにしかmatrixを書き込まない
-    # （対象外になった設問の古い値は自分では消さない）ため、_renumber_entriesと同様に
-    # 呼び出し前に全件リセットしておく必要がある。
-    for e in entries:
-        e['matrix'] = ''
-    _assign_matrix_groups(entries)
 
 
 def _renumber_entries(entries: list[dict]) -> None:
