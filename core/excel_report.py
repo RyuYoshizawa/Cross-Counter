@@ -545,7 +545,7 @@ def _write_list_cross_half(ws: Worksheet, row: int, group: dict, labels: list[st
         _write_list_cross_value(ws, row, first_col + i, values.get(label, 0), is_pct=is_pct, is_total=True)
     if is_pct:
         _write_list_cross_total_pct(ws, row, total_col, values, labels, is_total=True)
-        _grid(ws, row, n_col, f"n={group['overall_base']}", align=_VALUE_ALIGN, is_total=True)
+        _write_list_cross_n_label(ws, row, n_col, f"n={group['overall_base']}", is_total=True)
     else:
         _grid(ws, row, total_col, group['overall_base'], is_total=True)
     row += 2  # 全体行の直後は必ず1行空ける（見本どおり）
@@ -559,7 +559,7 @@ def _write_list_cross_half(ws: Worksheet, row: int, group: dict, labels: list[st
                 _write_list_cross_value(ws, row, first_col + i, values.get(label, 0), is_pct=is_pct)
             if is_pct:
                 _write_list_cross_total_pct(ws, row, total_col, values, labels)
-                _grid(ws, row, n_col, f"n={cat['base']}", align=_VALUE_ALIGN)
+                _write_list_cross_n_label(ws, row, n_col, f"n={cat['base']}")
             else:
                 _grid(ws, row, total_col, cat['base'])
             row += 1
@@ -582,6 +582,15 @@ def _write_list_cross_total_pct(ws: Worksheet, row: int, col: int, values: dict[
         _grid(ws, row, col, None, is_total=is_total)
     else:
         _grid(ws, row, col, round(total / 100, 4), number_format='0%', is_total=is_total)
+
+
+def _write_list_cross_n_label(ws: Worksheet, row: int, col: int, value: str, *, is_total: bool = False) -> None:
+    """
+    n=列は、表の格子（罫線）を持たせず添える（ユーザー提示の画像で「枠無し」を指定された、
+    2026-08-26）。他の列と違い表の値そのものではなく参考情報のため、_gridではなく_setを直接
+    使い、borderを渡さない。
+    """
+    _set(ws, row, col, value, align=_VALUE_ALIGN, fill=_TOTAL_FILL if is_total else None)
 
 
 def _write_list_cross_value(ws: Worksheet, row: int, col: int, value: float, *, is_pct: bool,
