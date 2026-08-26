@@ -280,7 +280,14 @@ def _format_list_cross_table(group: dict, labels: list[str], first_col_label: st
         for label in labels:
             v = values.get(label, 0)
             row_dict[label] = (_format_pct_value(v) if v else '') if is_pct else (str(int(v)) if v else '')
-        row_dict['全体'] = f'n={base}' if is_pct else str(int(base))
+        if is_pct:
+            # ％表は選択肢％の合計（単一選択なら通常100%、複数選択なら100%を超え得る）を
+            # 「全体」列に、母数はその右のn列に分けて持つ（Excel出力と同じレイアウト、2026-08-26）。
+            total_pct = sum(values.get(label, 0) for label in labels)
+            row_dict['全体'] = _format_pct_value(total_pct) if total_pct else ''
+            row_dict['n'] = f'n={base}'
+        else:
+            row_dict['全体'] = str(int(base))
         data.append(row_dict)
     return pd.DataFrame(data)
 
@@ -295,12 +302,15 @@ def _stack_list_cross_table(group: dict, labels: list[str]) -> pd.DataFrame:
         rows.append({
             '属性設問': shown_attr, '属性カテゴリ': category, '種別': '実数',
             **{label: n.get(label, 0) for label in labels},
-            '全体': base,
+            '全体': base, 'n': '',
         })
+        # ％行の「全体」は選択肢％の合計（単一選択なら通常100%、複数選択なら100%を超え得る）、
+        # 母数はその右のn列に分ける（Excel出力と同じレイアウト、2026-08-26）。
+        total_pct = sum(pct.get(label, 0) for label in labels)
         rows.append({
             '属性設問': '', '属性カテゴリ': '', '種別': '％',
             **{label: f"{pct.get(label, 0)}%" for label in labels},
-            '全体': f'n={base}',
+            '全体': (f'{total_pct:g}%' if total_pct else ''), 'n': f'n={base}',
         })
     return pd.DataFrame(rows)
 

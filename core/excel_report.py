@@ -519,17 +519,23 @@ def _write_list_cross_group(ws: Worksheet, row: int, group: dict, sort_order: st
 def _write_list_cross_half(ws: Worksheet, row: int, group: dict, labels: list[str],
                             original_index: dict[str, int], first_col: int, total_col: int,
                             *, section_label: str, is_pct: bool) -> int:
-    # 元の選択肢番号の行（見本どおり、その他バケット等の合成列は空欄）
+    # ％表は選択肢％の右に「全体」（％の合計、選択肢が単一選択なら通常100%）列を持ち、
+    # その右にn=列を続ける（実数表は「全体」列＝横断合計人数がそのままnを兼ねるため、
+    # 列を1つ追加せずtotal_colだけで足りる）。以前は％表に「全体」列が無い非対称な仕様
+    # だったが、％表だけを見たときに母数の内訳が分かりにくいという指摘を受けて追加した
+    # （2026-08-26）。
+    n_col = total_col + 1 if is_pct else total_col
+
+    # 元の選択肢番号の行（見本どおり、その他バケット等の合成列・全体/n列は空欄）
     for i, label in enumerate(labels):
         _grid(ws, row, first_col + i, original_index.get(label), align=_LABEL_ALIGN)
     row += 1
 
-    # 見出し行（％表/実数表、選択肢名。実数表のみ最終列に「全体」を出す——見本の非対称な仕様）
+    # 見出し行（％表/実数表、選択肢名、「全体」）
     _grid(ws, row, 2, section_label, align=_LABEL_ALIGN)
     for i, label in enumerate(labels):
         _grid(ws, row, first_col + i, label, align=_LABEL_ALIGN)
-    if not is_pct:
-        _grid(ws, row, total_col, _TOTAL_LABEL, align=_LABEL_ALIGN, is_total=True)
+    _grid(ws, row, total_col, _TOTAL_LABEL, align=_LABEL_ALIGN, is_total=True)
     row += 1
 
     # 全体行（対象設問につき1つだけ、属性設問を横断した合計）
@@ -538,7 +544,8 @@ def _write_list_cross_half(ws: Worksheet, row: int, group: dict, labels: list[st
     for i, label in enumerate(labels):
         _write_list_cross_value(ws, row, first_col + i, values.get(label, 0), is_pct=is_pct, is_total=True)
     if is_pct:
-        _grid(ws, row, total_col, f"n={group['overall_base']}", align=_VALUE_ALIGN, is_total=True)
+        _write_list_cross_total_pct(ws, row, total_col, values, labels, is_total=True)
+        _grid(ws, row, n_col, f"n={group['overall_base']}", align=_VALUE_ALIGN, is_total=True)
     else:
         _grid(ws, row, total_col, group['overall_base'], is_total=True)
     row += 2  # 全体行の直後は必ず1行空ける（見本どおり）
@@ -551,7 +558,8 @@ def _write_list_cross_half(ws: Worksheet, row: int, group: dict, labels: list[st
             for i, label in enumerate(labels):
                 _write_list_cross_value(ws, row, first_col + i, values.get(label, 0), is_pct=is_pct)
             if is_pct:
-                _grid(ws, row, total_col, f"n={cat['base']}", align=_VALUE_ALIGN)
+                _write_list_cross_total_pct(ws, row, total_col, values, labels)
+                _grid(ws, row, n_col, f"n={cat['base']}", align=_VALUE_ALIGN)
             else:
                 _grid(ws, row, total_col, cat['base'])
             row += 1
@@ -559,6 +567,21 @@ def _write_list_cross_half(ws: Worksheet, row: int, group: dict, labels: list[st
         row += 1  # 属性グループの直後は1行空ける（見本どおり）
 
     return row
+
+
+def _write_list_cross_total_pct(ws: Worksheet, row: int, col: int, values: dict[str, float],
+                                 labels: list[str], *, is_total: bool = False) -> None:
+    """
+    ％表の「全体」列——その行の各選択肢％の合計（単一選択なら通常100%、複数選択なら
+    100%を超え得る、実際の値をそのまま見せる）。他の％セルと桁数を揃えず、四捨五入した
+    整数表示にする（見本で0.0%ではなく100%と表示されていたことを確認）。0%は他の値
+    セルと同じく空欄のままにする。
+    """
+    total = sum(values.get(label, 0) for label in labels)
+    if not total:
+        _grid(ws, row, col, None, is_total=is_total)
+    else:
+        _grid(ws, row, col, round(total / 100, 4), number_format='0%', is_total=is_total)
 
 
 def _write_list_cross_value(ws: Worksheet, row: int, col: int, value: float, *, is_pct: bool,
