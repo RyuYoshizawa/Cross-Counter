@@ -12,6 +12,7 @@ import streamlit as st
 from core.cross_plan import apply_grid_checks, build_grid_dataframe, gridable_questions, grid_checks_from_df
 from core.ingest import read_raw_file
 from core.project import build_project, deserialize_project, serialize_project
+from core.question_definition import backfill_n_note_adopted
 from ui.auth import render_logout_button
 
 # 新規プロジェクト開始時にクリアすべきsession_stateキー（APIキーは意図的に含めない）
@@ -258,6 +259,7 @@ def _restore_project_state(project: dict) -> None:
     st.session_state['raw_encoding'] = project['raw_encoding']
     st.session_state['excluded_row_ids'] = project['excluded_row_ids']
     st.session_state['question_definition'] = project.get('question_definition', [])
+    backfill_n_note_adopted(st.session_state['question_definition'])
     st.session_state['question_definition_confirmed'] = project.get('question_definition_confirmed', False)
     st.session_state['cross_table_format'] = project.get('cross_table_format', '')
     st.session_state['triple_cross_specs'] = project.get('triple_cross_specs', [])

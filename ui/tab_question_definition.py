@@ -85,6 +85,7 @@ def _render_question_definition(api_key: str) -> None:
             column_config={
                 'ID': st.column_config.TextColumn('ID', pinned=True),
                 '必': st.column_config.TextColumn('必', width='small'),
+                '採用': st.column_config.CheckboxColumn('採用', width='small'),
             },
         )
         return
@@ -92,8 +93,10 @@ def _render_question_definition(api_key: str) -> None:
     st.caption(
         'アンケートフォームのPDFから作成した設問定義表です。「設問文」「選択肢」列は変更できません。'
         '「形式」（SA/MA/FAを直接入力）「短縮設問文」「短縮選択肢」「matrix」「n変化」は自由に'
-        '編集できます。内容に問題がなければ「設問定義表の確定」を押してください（確定後は一覧表・'
-        'グラフ・集計で短縮版が使われます。未確定のままなら原文が使われます）。'
+        '編集できます。「採用」列は、その設問を下の「前提条件（分岐条件）の設定」に出すかどうかの'
+        'チェックです（n変化のメモの有無から初期値を提案しますが、AIが拾えなかった設問にも'
+        'チェックできます）。内容に問題がなければ「設問定義表の確定」を押してください（確定後は'
+        '一覧表・グラフ・集計で短縮版が使われます。未確定のままなら原文が使われます）。'
     )
 
     review_df = to_review_dataframe(entries)
@@ -103,6 +106,7 @@ def _render_question_definition(api_key: str) -> None:
         column_config={
             'ID': st.column_config.TextColumn('ID', pinned=True),
             '必': st.column_config.TextColumn('必', width='small'),
+            '採用': st.column_config.CheckboxColumn('採用', width='small'),
         },
         # 形式にSelectboxColumnを使うと、同じ表内の他の空欄セルが"None"と表示されてしまう
         # Streamlitの既知の不具合があるため、自由入力＋apply_review_edits側での検証にしている。
@@ -311,14 +315,18 @@ def _render_condition_review(entries: list[dict]) -> None:
     持っていても、RAWデータ上は「対象外の回答者は前提設問のセルも空欄のまま」になるため、
     直接の前提設問1段だけを見れば連鎖的な分岐も自動的に正しく絞り込める（再帰的な解決は不要）。
 
-    **n変化列との連携（2026-08-25、ユーザーとの合意事項）**: 分岐箇所はフォームPDF/HTML
+    **設問定義表「採用」列との連携（2026-08-26、設計変更）**: 分岐箇所はフォームPDF/HTML
     解析の時点でn_note（表の「n変化」列、フォームのセクション説明文言から拾った自由記述の
-    メモ）に既に記録されていることが多い。ただしn_noteは自由記述で、どの設問のどの回答値が
-    条件かを機械的に確定はできない（表現のブレがあり誤判定の方が実害が大きい）ため、対象の
-    回答値そのものは人に選んでもらう必要がある。その代わり、n_noteがある設問だけを対象一覧に
-    絞り込み、ゲート設問は「直前の設問」を既定選択にしておくことで、チェックを入れて対象の
-    回答を選ぶだけで済むようにし、全設問からの検索・選択の手間を無くした。n_noteが無い設問
-    向けの詳細設定は下の折りたたみに残す。
+    メモ）に既に記録されていることが多いが、n_noteは自由記述の自動抽出で精度に限界があり
+    （見落し・過剰検出とも実データで確認済み）、この抽出結果だけを機械的にレビュー対象へ
+    出すと精度の問題がそのまま画面に出てしまう。そのため「レビュー欄に出すかどうか」の
+    最終判断は設問定義表の「採用」チェックボックス（entryの`n_note_adopted`フィールド、
+    n変化列の左）に一本化した——初期値はn_noteの有無から提案するが、以後はチェックの
+    有無だけで決まる（n_noteの自動抽出はあくまで参考のヒントとして残るのみ）。全設問
+    （AIがn変化を拾えなかった設問・FAなど対象設問になれない形式も含む）にチェックボックスが
+    あり、チェックを入れるとこのレビュー欄に随時現れる。対象の回答値そのものは自由記述からは
+    機械的に確定できない（表現のブレがあり誤判定の方が実害が大きい）ため、引き続き人に
+    選んでもらう。ゲート設問は既定で直前の設問。
     """
     gate_candidates = gridable_questions(entries)
     if len(gate_candidates) < 1:
@@ -326,35 +334,35 @@ def _render_condition_review(entries: list[dict]) -> None:
 
     st.markdown('##### 前提条件（分岐条件）の設定')
     st.caption(
-        '「n変化」列にメモがある設問（分岐で対象者が絞られる設問）です。チェックを入れて対象の'
-        '回答を選ぶと、集計表に回答条件・回答率が表示されます（未チェックの設問は今まで通り'
-        '全回答者を対象に計算します）。ゲート設問は既定で直前の設問——チェックボックスにマウスを'
-        '乗せるとn変化のメモが確認できます。'
+        '設問定義表の「採用」列にチェックが入っている設問です。チェックを入れて対象の回答を'
+        '選ぶと、集計表に回答条件・回答率が表示されます（未チェックの設問は今まで通り全回答者を'
+        '対象に計算します）。ゲート設問は既定で直前の設問——チェックボックスにマウスを乗せると'
+        'n変化のメモ（あれば）が確認できます。'
     )
 
     label_by_id = {e['id']: question_label(e) for e in entries}
-    # FA設問は集計軸になれず（gridable_questions参照）、前提条件（condition_entry_id/
-    # condition_values）が対象設問として参照されることが無いため、n_noteがあっても
-    # 候補から除外する（2026-08-26、実データで「分岐セクション内のFA follow-up設問まで
-    # 前提条件の設定対象になっている」という指摘を受けて対応——core/form_html.pyがn_noteを
-    # 同じセクション内の設問全てに引き継ぐよう変更した際に、湧いて出た副作用）。
-    noted_entries = [e for e in gate_candidates if e.get('n_note', '').strip()]
+    noted_entries = [e for e in entries if e.get('n_note_adopted')]
     if not noted_entries:
-        st.caption('「n変化」列にメモがある設問はありません。')
+        st.caption('設問定義表の「採用」列にチェックが入っている設問はありません。')
     for entry in noted_entries:
+        note = entry.get('n_note', '').strip()
         _render_condition_editor(
             entry, entries, gate_candidates, label_by_id, key_prefix='condition_noted',
             default_on=bool(entry.get('condition_entry_id')),
-            checkbox_label=label_by_id[entry['id']], help_text=f'n変化のメモ: {entry["n_note"]}',
+            checkbox_label=label_by_id[entry['id']],
+            help_text=f'n変化のメモ: {note}' if note else None,
         )
 
-    other_configured = [
-        e for e in entries if e.get('condition_entry_id') and not e.get('n_note', '').strip()
+    # 「採用」チェックを外した後も前提条件そのものは残る（unchecked＝レビュー欄に出さない、
+    # だけの意味で、既存の設定を消すわけではない）。設定が残ったまま見えなくなって困らないよう、
+    # チェックが外れている設問の設定済み一覧＋解除ボタンだけは残す（対象設問の選び直しは
+    # 設問定義表の「採用」チェックで行うため、以前あった手動選択用のドロップダウンは廃止した）。
+    orphaned_configured = [
+        e for e in entries if e.get('condition_entry_id') and not e.get('n_note_adopted')
     ]
-    with st.expander('➕ n変化にメモが無い設問にも前提条件を設定する（詳細設定）', expanded=bool(other_configured)):
-        if other_configured:
-            st.caption('この詳細設定で設定済み:')
-            for entry in other_configured:
+    if orphaned_configured:
+        with st.expander(f'⚠️ 「採用」チェックが外れているが前提条件が設定済みの設問（{len(orphaned_configured)}件）', expanded=True):
+            for entry in orphaned_configured:
                 gate_label = label_by_id.get(entry['condition_entry_id'], '（対応する設問なし）')
                 values = '、'.join(entry.get('condition_values', []))
                 col1, col2 = st.columns([6, 1])
@@ -365,15 +373,6 @@ def _render_condition_review(entries: list[dict]) -> None:
                         entry['condition_entry_id'] = None
                         entry['condition_values'] = []
                         st.rerun()
-            st.divider()
-
-        target_options = {f'{e["id"]}: {label_by_id[e["id"]]}': e['id'] for e in entries}
-        target_key = st.selectbox('対象設問（この条件を適用する設問）', list(target_options.keys()), key='condition_target_select')
-        target_entry = next(e for e in entries if e['id'] == target_options[target_key])
-        _render_condition_editor(
-            target_entry, entries, gate_candidates, label_by_id, key_prefix='condition_manual',
-            default_on=bool(target_entry.get('condition_entry_id')),
-        )
 
 
 def _render_import(api_key: str) -> None:
