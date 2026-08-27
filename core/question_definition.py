@@ -44,7 +44,7 @@ FORMAT_CHOICES = [FORMAT_SA, FORMAT_MA, FORMAT_FA]
 # 実物のスクリーンショットから根本原因を特定）。
 _NATIVE_OTHER_OPTION_TEXTS = ('その他:', 'その他：')
 
-REVIEW_COLUMNS = ['ID', '必', '形式', '短縮設問文', '短縮選択肢', '設問文', '選択肢', 'matrix', 'n変化']
+REVIEW_COLUMNS = ['ID', 'n変化', '形式', '短縮設問文', '短縮選択肢', '設問文', '選択肢', 'matrix', '必']
 _REQUIRED_MARK = '※'
 
 

@@ -45,14 +45,14 @@ _DEFAULT_INITIAL_ROWS = 50
 # 確定済み表示（st.dataframe）・編集表示（st.data_editor）の両方で共通に使う。
 _REVIEW_COLUMN_CONFIG = {
     'ID': st.column_config.TextColumn('ID', pinned=True, width=60),
-    '必': st.column_config.TextColumn('必', width=55),
+    'n変化': st.column_config.TextColumn('n変化', width=90),
     '形式': st.column_config.TextColumn('形式', width=90),
     '短縮設問文': st.column_config.TextColumn('短縮設問文', width=200),
     '短縮選択肢': st.column_config.TextColumn('短縮選択肢', width=190),
     '設問文': st.column_config.TextColumn('設問文', width=190),
     '選択肢': st.column_config.TextColumn('選択肢', width=150),
     'matrix': st.column_config.TextColumn('matrix', width=80),
-    'n変化': st.column_config.TextColumn('n変化', width=90),
+    '必': st.column_config.TextColumn('必', width=55),
 }
 
 
@@ -287,26 +287,35 @@ def _render_condition_editor(entry: dict, entries: list[dict], gate_candidates: 
     default_gate_id = entry.get('condition_entry_id') or (_preceding_gridable(entries, entry['id']) or {}).get('id')
     default_key = next((k for k, e in gate_keys.items() if e['id'] == default_gate_id), None)
 
-    gate_label_col, gate_input_col, values_label_col, values_input_col = st.columns([1, 3, 1, 3])
-    with gate_label_col:
-        st.markdown('条件設問')
-    with gate_input_col:
-        gate_key = st.selectbox(
-            '前提条件となる設問', keys_list, index=keys_list.index(default_key) if default_key else 0,
-            key=f'condition_gate_{entry["id"]}', label_visibility='collapsed',
-        )
+    # 「条件設問」「対象回答」のペアごとにラベルを入力欄へ寄せ（内側の列はgap='xxsmall'）、
+    # ペア同士（条件設問の入力欄と対象回答の入力欄）の間はもう少し離す（外側の列は
+    # gap='large'）——ラベルと入力欄が離れすぎている・2つの入力欄が近すぎるという指摘を
+    # 反映（2026-08-27）。st.columnsは1回の呼び出し内で全ての境界に同じgapしか指定できない
+    # ため、外側2列（ペアごと）と内側2列（ラベル＋入力欄）で入れ子にして使い分けている。
+    gate_group, values_group = st.columns(2, gap='large')
+    with gate_group:
+        gate_label_col, gate_input_col = st.columns([1, 3], gap='xxsmall')
+        with gate_label_col:
+            st.markdown('条件設問')
+        with gate_input_col:
+            gate_key = st.selectbox(
+                '前提条件となる設問', keys_list, index=keys_list.index(default_key) if default_key else 0,
+                key=f'condition_gate_{entry["id"]}', label_visibility='collapsed',
+            )
     gate_entry = gate_keys[gate_key]
 
     option_texts = [o['text'] for o in gate_entry['options']]
     default_values = entry.get('condition_values', []) if entry.get('condition_entry_id') == gate_entry['id'] else []
-    with values_label_col:
-        st.markdown('対象回答')
-    with values_input_col:
-        selected_values = st.multiselect(
-            '対象とする回答（未選択なら前提条件なし）', option_texts, default=default_values,
-            key=f'condition_values_{entry["id"]}', label_visibility='collapsed',
-            placeholder='対象とする回答を選択',
-        )
+    with values_group:
+        values_label_col, values_input_col = st.columns([1, 3], gap='xxsmall')
+        with values_label_col:
+            st.markdown('対象回答')
+        with values_input_col:
+            selected_values = st.multiselect(
+                '対象とする回答（未選択なら前提条件なし）', option_texts, default=default_values,
+                key=f'condition_values_{entry["id"]}', label_visibility='collapsed',
+                placeholder='対象とする回答を選択',
+            )
     entry['condition_entry_id'] = gate_entry['id'] if selected_values else None
     entry['condition_values'] = selected_values
 
@@ -347,7 +356,10 @@ def _render_condition_review(entries: list[dict]) -> None:
             '「前提条件となる設問」「対象とする回答」を設定してください（「n変化」にメモが'
             'あれば、分岐条件のヒントとして表示します）。'
         )
-        with st.container(height=500):
+        # gap='xxsmall'（0.25rem）で行間を極力詰める（2026-08-27、2行に圧縮したのに行間が
+        # 広いという指摘を反映）。既定の'small'（1rem）のままだと見出し行・設定行・区切り線の
+        # 間が間延びして見えていた。
+        with st.container(height=500, gap='xxsmall'):
             for i, entry in enumerate(gate_candidates):
                 note = entry.get('n_note', '').strip()
                 configured = bool(entry.get('condition_entry_id') and entry.get('condition_values'))
@@ -355,7 +367,9 @@ def _render_condition_review(entries: list[dict]) -> None:
                 # 見出し行1行＋設定行1行の計2行に収める（2026-08-27、当初は見出し・n変化メモ・
                 # 設定行で3行になっていたのを圧縮した指摘を反映）。未設定の設問は見出しに
                 # 「対象回答が未設定の場合は前提条件なし」という固定の案内を添え、n変化のメモが
-                # あれば続けて同じ行に表示する。
+                # あれば続けて同じ行に表示する。案内文言はタイトルと差別化するため、レギュラー
+                # フォント・やや小さめ・右寄せにし、タイトルと同じ行の右端に配置する
+                # （st.columnsで左右に分け、右側はunsafe_allow_htmlで直接スタイルを当てる）。
                 if configured:
                     gate_label = label_by_id.get(entry['condition_entry_id'], '（対応する設問なし）')
                     values = '、'.join(entry.get('condition_values', []))
@@ -363,7 +377,14 @@ def _render_condition_review(entries: list[dict]) -> None:
                 else:
                     hint = f'対象回答が未設定の場合は前提条件なし（n変化のメモ: {note}）' if note else \
                         '対象回答が未設定の場合は前提条件なし'
-                    st.markdown(f'**{title}**　{hint}')
+                    title_col, hint_col = st.columns([2, 3], gap='xxsmall')
+                    with title_col:
+                        st.markdown(f'**{title}**')
+                    with hint_col:
+                        st.markdown(
+                            f'<div style="text-align:right; font-weight:normal; font-size:0.9em;">{hint}</div>',
+                            unsafe_allow_html=True,
+                        )
                 _render_condition_editor(entry, entries, gate_candidates, label_by_id)
                 if i < len(gate_candidates) - 1:
                     st.divider()
