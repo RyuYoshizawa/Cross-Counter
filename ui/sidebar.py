@@ -26,7 +26,7 @@ _PROJECT_RESET_KEYS = [
     'form_html_uploader', '_loaded_form_html_file_id', 'form_html_bytes', 'form_html_name',
     'cross_grid_df', 'cross_grid_questions_key', 'cross_grid_version', 'cross_table_ai_version',
     'cross_table_format', 'triple_cross_specs', 'list_cross_attrs', 'list_cross_targets',
-    'list_cross_sort_order', 'cross_table_rows', 'cross_plan_confirmed',
+    'list_cross_sort_order', 'list_cross_ai_comment', 'cross_table_rows', 'cross_plan_confirmed',
     'crosstab_results', 'triple_cross_results', 'list_cross_results', 'crosstab_issues', 'usage_log',
     'data_export_add_serial',
     # 12はui/tab_data_export.pyの_MAX_ROWSと合わせること
@@ -264,6 +264,7 @@ def _restore_project_state(project: dict) -> None:
     st.session_state['list_cross_attrs'] = project.get('list_cross_attrs', [])
     st.session_state['list_cross_targets'] = project.get('list_cross_targets', [])
     st.session_state['list_cross_sort_order'] = project.get('list_cross_sort_order', '')
+    st.session_state['list_cross_ai_comment'] = project.get('list_cross_ai_comment', True)
     st.session_state['cross_table_rows'] = project.get('cross_table_rows', [])
     st.session_state['cross_plan_confirmed'] = project.get('cross_plan_confirmed', False)
     st.session_state['usage_log'] = project.get('usage_log', [])
@@ -300,6 +301,7 @@ def _sync_or_create_project() -> None:
     list_cross_attrs = st.session_state.get('list_cross_attrs', [])
     list_cross_targets = st.session_state.get('list_cross_targets', [])
     list_cross_sort_order = st.session_state.get('list_cross_sort_order', '')
+    list_cross_ai_comment = st.session_state.get('list_cross_ai_comment', True)
     cross_table_rows = st.session_state.get('cross_table_rows', [])
     cross_plan_confirmed = st.session_state.get('cross_plan_confirmed', False)
     usage_log = st.session_state.get('usage_log', [])
@@ -317,6 +319,7 @@ def _sync_or_create_project() -> None:
                 triple_cross_specs=triple_cross_specs,
                 list_cross_attrs=list_cross_attrs, list_cross_targets=list_cross_targets,
                 list_cross_sort_order=list_cross_sort_order,
+                list_cross_ai_comment=list_cross_ai_comment,
                 cross_table_rows=cross_table_rows,
                 cross_plan_confirmed=cross_plan_confirmed, usage_log=usage_log,
             )
@@ -332,6 +335,7 @@ def _sync_or_create_project() -> None:
         'triple_cross_specs': triple_cross_specs,
         'list_cross_attrs': list_cross_attrs, 'list_cross_targets': list_cross_targets,
         'list_cross_sort_order': list_cross_sort_order,
+        'list_cross_ai_comment': list_cross_ai_comment,
         'cross_table_rows': cross_table_rows,
         'cross_plan_confirmed': cross_plan_confirmed, 'usage_log': usage_log,
     })

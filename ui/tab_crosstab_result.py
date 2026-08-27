@@ -30,8 +30,8 @@ _TOTAL_LABEL = '全体'
 
 def render(columns: list[str], rows: list[dict], excluded_row_ids: list[int], entries: list[dict],
            cross_table_rows: list[dict], triple_cross_specs: list[dict], list_cross_attrs: list[str],
-           list_cross_targets: list[str], list_cross_sort_order: str, cross_plan_confirmed: bool,
-           table_format: str, api_key: str) -> None:
+           list_cross_targets: list[str], list_cross_sort_order: str, list_cross_ai_comment: bool,
+           cross_plan_confirmed: bool, table_format: str, api_key: str) -> None:
     st.subheader('集計表')
 
     if not rows:
@@ -54,7 +54,8 @@ def render(columns: list[str], rows: list[dict], excluded_row_ids: list[int], en
     with run_col:
         if st.button('▶ 集計表とグラフを作成する', type='primary', key='run_cross_plan', width='stretch'):
             _run(columns, rows, excluded_row_ids, entries, cross_table_rows, triple_cross_specs,
-                 list_cross_attrs, list_cross_targets, list_cross_sort_order or SORT_DESC, api_key)
+                 list_cross_attrs, list_cross_targets, list_cross_sort_order or SORT_DESC,
+                 list_cross_ai_comment, api_key)
             st.rerun()
 
     results = st.session_state.get('crosstab_results')
@@ -129,7 +130,8 @@ def render(columns: list[str], rows: list[dict], excluded_row_ids: list[int], en
 
 def _run(columns: list[str], rows: list[dict], excluded_row_ids: list[int], entries: list[dict],
           cross_table_rows: list[dict], triple_cross_specs: list[dict], list_cross_attrs: list[str],
-          list_cross_targets: list[str], list_cross_sort_order: str, api_key: str) -> None:
+          list_cross_targets: list[str], list_cross_sort_order: str, list_cross_ai_comment: bool,
+          api_key: str) -> None:
     df = pd.DataFrame(rows)
     if excluded_row_ids:
         df = df[~df['_row_id'].isin(excluded_row_ids)]
@@ -141,7 +143,10 @@ def _run(columns: list[str], rows: list[dict], excluded_row_ids: list[int], entr
     issues = issues + triple_issues + list_cross_issues
 
     ai_targets = [r for r in results if not r['is_gt'] and r.get('ai_comment', True)]
-    total_ai_calls = len(ai_targets) + len(triple_results) + len(list_cross_results)
+    # 一覧型クロス集計は対象設問ごとに1コメントで件数が多くなりがちなため、個々の表ではなく
+    # 一括のチェック（list_cross_ai_comment、既定True）でオン/オフする（2026-08-27）。
+    list_cross_ai_targets = list_cross_results if list_cross_ai_comment else []
+    total_ai_calls = len(ai_targets) + len(triple_results) + len(list_cross_ai_targets)
     if api_key and total_ai_calls:
         client = llm_client.make_client('Anthropic', api_key)
         usage_before = usage_snapshot(llm_client.get_token_usage)
@@ -150,7 +155,7 @@ def _run(columns: list[str], rows: list[dict], excluded_row_ids: list[int], entr
                 r['commentary'] = generate_cross_commentary(client, r, model=COMMENTARY_MODEL)
             for r in triple_results:
                 r['commentary'] = generate_triple_cross_commentary(client, r, model=COMMENTARY_MODEL)
-            for group in list_cross_results:
+            for group in list_cross_ai_targets:
                 labels = order_target_labels(group, list_cross_sort_order)
                 group['commentary'] = generate_list_cross_commentary(client, group, labels, model=COMMENTARY_MODEL)
         usage_after = usage_snapshot(llm_client.get_token_usage)

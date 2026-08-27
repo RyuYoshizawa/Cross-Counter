@@ -39,6 +39,7 @@ triple_cross_specs = st.session_state.get('triple_cross_specs', [])
 list_cross_attrs = st.session_state.get('list_cross_attrs', [])
 list_cross_targets = st.session_state.get('list_cross_targets', [])
 list_cross_sort_order = st.session_state.get('list_cross_sort_order', '')
+list_cross_ai_comment = st.session_state.get('list_cross_ai_comment', True)
 cross_plan_confirmed = st.session_state.get('cross_plan_confirmed', False)
 table_format = st.session_state.get('cross_table_format', '')
 
@@ -52,7 +53,8 @@ with tabs[1]:
 with tabs[2]:
     tab_crosstab_result.render(columns, settings['rows'], settings['excluded_row_ids'], entries,
                                 cross_table_rows, triple_cross_specs, list_cross_attrs, list_cross_targets,
-                                list_cross_sort_order, cross_plan_confirmed, table_format, settings['api_key'])
+                                list_cross_sort_order, list_cross_ai_comment, cross_plan_confirmed,
+                                table_format, settings['api_key'])
 with tabs[3]:
     tab_charts.render()
 with tabs[4]:

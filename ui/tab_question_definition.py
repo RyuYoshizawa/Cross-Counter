@@ -63,11 +63,6 @@ def _render_question_definition(api_key: str) -> None:
     if warnings:
         st.warning('\n'.join(warnings))
 
-    # 確定（保護）済みでも、タイムスタンプ等の手動追加は行えるようにする——以前はここが
-    # 未確定時のみ表示され、確定後は保護解除しないと追加できなかった（確定した状態で
-    # 集計まで進めた後にタイムスタンプの追加漏れに気づく、という実際の使われ方に合わない
-    # 実害があったため、確定状態に関わらず常に表示するよう変更、2026-08-22）。
-    _render_manual_entry_form(entries)
     _render_definition_replace_upload(entries)
     _render_condition_review(entries)
 
@@ -87,47 +82,53 @@ def _render_question_definition(api_key: str) -> None:
                 '必': st.column_config.TextColumn('必', width='small'),
             },
         )
-        return
+    else:
+        st.caption(
+            'アンケートフォームのPDFから作成した設問定義表です。「設問文」「選択肢」列は変更できません。'
+            '「形式」（SA/MA/FAを直接入力）「短縮設問文」「短縮選択肢」「matrix」「n変化」は自由に'
+            '編集できます。内容に問題がなければ「設問定義表の確定」を押してください（確定後は'
+            '一覧表・グラフ・集計で短縮版が使われます。未確定のままなら原文が使われます）。'
+        )
 
-    st.caption(
-        'アンケートフォームのPDFから作成した設問定義表です。「設問文」「選択肢」列は変更できません。'
-        '「形式」（SA/MA/FAを直接入力）「短縮設問文」「短縮選択肢」「matrix」「n変化」は自由に'
-        '編集できます。内容に問題がなければ「設問定義表の確定」を押してください（確定後は'
-        '一覧表・グラフ・集計で短縮版が使われます。未確定のままなら原文が使われます）。'
-    )
+        review_df = to_review_dataframe(entries)
+        edited_df = st.data_editor(
+            review_df, width='stretch', height=500, hide_index=True, key='question_definition_editor',
+            disabled=['ID', '必', '設問文', '選択肢'],
+            column_config={
+                'ID': st.column_config.TextColumn('ID', pinned=True),
+                '必': st.column_config.TextColumn('必', width='small'),
+            },
+            # 形式にSelectboxColumnを使うと、同じ表内の他の空欄セルが"None"と表示されてしまう
+            # Streamlitの既知の不具合があるため、自由入力＋apply_review_edits側での検証にしている。
+            # 「必」（必須設問マーク）はフォーム自体から読み取った情報で人が編集するものではないため
+            # disabledに含める（2026-08-25、ユーザーとの合意事項）。
+        )
 
-    review_df = to_review_dataframe(entries)
-    edited_df = st.data_editor(
-        review_df, width='stretch', height=500, hide_index=True, key='question_definition_editor',
-        disabled=['ID', '必', '設問文', '選択肢'],
-        column_config={
-            'ID': st.column_config.TextColumn('ID', pinned=True),
-            '必': st.column_config.TextColumn('必', width='small'),
-        },
-        # 形式にSelectboxColumnを使うと、同じ表内の他の空欄セルが"None"と表示されてしまう
-        # Streamlitの既知の不具合があるため、自由入力＋apply_review_edits側での検証にしている。
-        # 「必」（必須設問マーク）はフォーム自体から読み取った情報で人が編集するものではないため
-        # disabledに含める（2026-08-25、ユーザーとの合意事項）。
-    )
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button('✅ 設問定義表の確定', type='primary', key='confirm_question_definition'):
+                updated_entries, warnings = apply_review_edits(edited_df, entries)
+                st.session_state['question_definition'] = updated_entries
+                st.session_state['question_definition_confirmed'] = True
+                if warnings:
+                    st.session_state['_question_definition_warnings'] = warnings
+                st.rerun()
+        with col2:
+            source = st.session_state.get('question_definition_source', 'html')
+            label = '🆕 HTMLから作り直す' if source == 'html' else '🆕 PDFから作り直す'
+            if st.button(label, key='rebuild_question_definition'):
+                # form_html_bytes/form_pdf_bytesは消さない。サイドバーでアップロード済みの同じ
+                # ファイルを使って再作成する（別のファイルに差し替えたい場合はサイドバーで
+                # 新しいファイルを選び直せばよい）。
+                st.session_state['question_definition'] = []
+                st.rerun()
 
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button('✅ 設問定義表の確定', type='primary', key='confirm_question_definition'):
-            updated_entries, warnings = apply_review_edits(edited_df, entries)
-            st.session_state['question_definition'] = updated_entries
-            st.session_state['question_definition_confirmed'] = True
-            if warnings:
-                st.session_state['_question_definition_warnings'] = warnings
-            st.rerun()
-    with col2:
-        source = st.session_state.get('question_definition_source', 'html')
-        label = '🆕 HTMLから作り直す' if source == 'html' else '🆕 PDFから作り直す'
-        if st.button(label, key='rebuild_question_definition'):
-            # form_html_bytes/form_pdf_bytesは消さない。サイドバーでアップロード済みの同じ
-            # ファイルを使って再作成する（別のファイルに差し替えたい場合はサイドバーで
-            # 新しいファイルを選び直せばよい）。
-            st.session_state['question_definition'] = []
-            st.rerun()
+    # 確定（保護）済みでも、タイムスタンプ等の手動追加は行えるようにする——以前はここが
+    # 未確定時のみ表示され、確定後は保護解除しないと追加できなかった（確定した状態で
+    # 集計まで進めた後にタイムスタンプの追加漏れに気づく、という実際の使われ方に合わない
+    # 実害があったため、確定状態に関わらず常に表示するよう変更、2026-08-22）。設問定義表
+    # そのものより下に置く（2026-08-27、配置変更——以前は表の上にあった）。
+    _render_manual_entry_form(entries)
 
 
 _TIMESTAMP_TEXT = 'タイムスタンプ'
@@ -741,30 +742,39 @@ def _render_raw_data_check(columns: list[str], rows: list[dict], raw_filename: s
 
     st.divider()
     st.markdown('##### 空欄提出候補')
+    current_excluded = set(st.session_state.get('excluded_row_ids', []))
+    already_excluded_blank = [r for r in blank_candidates if r in current_excluded]
+    pending_blank = [r for r in blank_candidates if r not in current_excluded]
     if not blank_candidates:
         st.caption('実質的に何も回答していない行（空欄提出）は見つかりませんでした。')
     else:
-        st.caption(
-            f'{len(blank_candidates)}件の行で、ほぼ全ての設問が空欄のまま提出されているのが'
-            '見つかりました（タイムスタンプ等、フォームが自動で埋める列以外に回答が無い行）。'
-            'このような行は分岐の無いあらゆる集計表に同じ「未回答」件数として現れます。'
-            '除外する行のチェックを確認してください（初期状態は全てチェック済み＝除外）。'
-        )
-        for row_id in blank_candidates:
-            answered = {
-                col: str(df.at[row_id, col]) for col in columns
-                if str(df.at[row_id, col]).strip() != ''
-            }
-            preview = '、'.join(f'{k}={v}' for k, v in answered.items()) or '（全設問が空欄）'
-            st.checkbox(f'行{row_id}（{preview}）', value=True, key=f'blank_excl_{row_id}')
+        if already_excluded_blank:
+            # 一度除外を確定した行は、チェックボックス・ボタン付きの候補としてではなく
+            # 確定済みの結果としてシンプルに表示する（除外後もチェックボックスと確定ボタンが
+            # 残り続けるのは分かりにくいという指摘を受けて対応、2026-08-27）。
+            st.caption(f'除外済みの行（{len(already_excluded_blank)}件）: ' + '、'.join(f'行{r}' for r in already_excluded_blank))
+        if pending_blank:
+            st.caption(
+                f'{len(pending_blank)}件の行で、ほぼ全ての設問が空欄のまま提出されているのが'
+                '見つかりました（タイムスタンプ等、フォームが自動で埋める列以外に回答が無い行）。'
+                'このような行は分岐の無いあらゆる集計表に同じ「未回答」件数として現れます。'
+                '除外する行のチェックを確認してください（初期状態は全てチェック済み＝除外）。'
+            )
+            for row_id in pending_blank:
+                answered = {
+                    col: str(df.at[row_id, col]) for col in columns
+                    if str(df.at[row_id, col]).strip() != ''
+                }
+                preview = '、'.join(f'{k}={v}' for k, v in answered.items()) or '（全設問が空欄）'
+                st.checkbox(f'行{row_id}（{preview}）', value=True, key=f'blank_excl_{row_id}')
 
     st.divider()
     if st.button('✅ この内容で除外行を確定する', type='primary', key='confirm_exclusions'):
-        excluded = set(test_selected_row_ids)
+        excluded = set(test_selected_row_ids) | set(already_excluded_blank)
         for row_id in mojibake_candidates:
             if st.session_state.get(f'mojibake_excl_{row_id}', True):
                 excluded.add(row_id)
-        for row_id in blank_candidates:
+        for row_id in pending_blank:
             if st.session_state.get(f'blank_excl_{row_id}', True):
                 excluded.add(row_id)
         st.session_state['excluded_row_ids'] = sorted(excluded)

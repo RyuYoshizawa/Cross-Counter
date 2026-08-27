@@ -32,6 +32,7 @@ def build_project(name: str, description: str, raw_filename: str, raw_encoding: 
                    list_cross_attrs: list[str] | None = None,
                    list_cross_targets: list[str] | None = None,
                    list_cross_sort_order: str = '',
+                   list_cross_ai_comment: bool = True,
                    cross_table_rows: list[dict] | None = None,
                    cross_plan_confirmed: bool = False,
                    usage_log: list[dict] | None = None) -> dict:
@@ -48,6 +49,8 @@ def build_project(name: str, description: str, raw_filename: str, raw_encoding: 
     list_cross_attrs/list_cross_targets/list_cross_sort_orderは一覧型クロス集計指定表の入力内容
     （Excel出力専用）——属性設問のセット（表左側、全ての対象設問に共通、最大5件）と対象設問の
     リスト（表頭、1つにつき1表、最大5件）を別々に持つ（個々のペアではない、SPEC 5.3.3参照）。
+    list_cross_ai_commentは一覧型クロス集計全体（対象設問ごとの各表）のAI分析（属性間の差異の
+    指摘）を一括でオン/オフする既定Trueのフラグ（個々の表ごとではなく全体で1つ、2026-08-27）。
     後から追加した項目のため必須キーには含めず、旧バージョンのプロジェクトファイル読み込み時は
     空欄扱いになる（deserialize_project参照）、
     cross_table_rowsはクロス集計指定表の内容（属性・対象・グラフ種別・AIコメントのオンオフを含む）、
@@ -72,6 +75,7 @@ def build_project(name: str, description: str, raw_filename: str, raw_encoding: 
         'list_cross_attrs': list_cross_attrs or [],
         'list_cross_targets': list_cross_targets or [],
         'list_cross_sort_order': list_cross_sort_order,
+        'list_cross_ai_comment': list_cross_ai_comment,
         'cross_table_rows': cross_table_rows or [],
         'cross_plan_confirmed': cross_plan_confirmed,
         'usage_log': usage_log or [],

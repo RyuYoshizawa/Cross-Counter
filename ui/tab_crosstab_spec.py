@@ -205,6 +205,16 @@ def _render_list_cross(questions: list[dict]) -> None:
     )
     st.session_state['list_cross_sort_order'] = sort_order
 
+    # 一覧型クロス集計は対象設問1つにつき1コメントで件数が多くなりがちなため、個々の表では
+    # なく一覧型クロス集計全体に対して一括でAI分析のオン/オフを切り替えられるようにする
+    # （既存のクロス集計指定表の行ごとのAIコメントチェックとは別の、まとめてのオン/オフ、
+    # 2026-08-27）。
+    ai_comment = st.checkbox(
+        'AI分析する（属性間の差異の指摘コメントを一覧型クロス集計表に追加します）',
+        value=st.session_state.get('list_cross_ai_comment', True), key='list_cross_ai_comment_checkbox',
+    )
+    st.session_state['list_cross_ai_comment'] = ai_comment
+
     attr_col, target_col = st.columns(2)
     stored_attrs = st.session_state.get('list_cross_attrs') or []
     with attr_col:
