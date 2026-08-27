@@ -44,7 +44,7 @@ FORMAT_CHOICES = [FORMAT_SA, FORMAT_MA, FORMAT_FA]
 # 実物のスクリーンショットから根本原因を特定）。
 _NATIVE_OTHER_OPTION_TEXTS = ('その他:', 'その他：')
 
-REVIEW_COLUMNS = ['ID', '必', '形式', '短縮設問文', '短縮選択肢', '設問文', '選択肢', 'matrix', '採用', 'n変化']
+REVIEW_COLUMNS = ['ID', '必', '形式', '短縮設問文', '短縮選択肢', '設問文', '選択肢', 'matrix', 'n変化']
 _REQUIRED_MARK = '※'
 
 
@@ -92,13 +92,6 @@ def build_entries(llm_questions: list[dict]) -> list[dict]:
             'short_question': q.get('short_question', ''),
             'options': options,
             'n_note': q.get('n_note', ''),
-            # n_note_adopted＝「前提条件（分岐条件）の設定」レビュー欄に出す設問かどうかの
-            # 最終決定（人が確定する、SPEC 5.4.3）。n_noteの自動抽出はあくまで参考情報で、
-            # 抽出精度に限界があるため（見落し・過剰検出とも実データで確認済み）、レビュー欄に
-            # 出すかどうかはこのフラグだけで決める——初期値はn_noteがあるかどうかから提案するが、
-            # 以後は人の判断がそのまま残る（一覧型クロス集計の全質問チェックボックス等と同じ、
-            # 提案→人が確定するパターン）。
-            'n_note_adopted': bool(str(q.get('n_note', '')).strip()),
             'matrix': '',
             'other_bucket': True,
             'has_native_other': has_native_other,
@@ -110,18 +103,6 @@ def build_entries(llm_questions: list[dict]) -> list[dict]:
         })
     _assign_matrix_groups(entries)
     return entries
-
-
-def backfill_n_note_adopted(entries: list[dict]) -> None:
-    """
-    旧バージョンのプロジェクトファイル（n_note_adoptedフィールドが無い、2026-08-26より前に
-    保存されたもの）を復元したときの後方互換用。新規作成（build_entries/add_manual_entry）は
-    最初からこのフィールドを持つため、ここはプロジェクトファイル復元時にだけ呼べばよい。
-    entriesを直接書き換える。
-    """
-    for entry in entries:
-        if 'n_note_adopted' not in entry:
-            entry['n_note_adopted'] = bool(str(entry.get('n_note', '')).strip())
 
 
 _Q_ID_PATTERN = re.compile(r'^Q\d+$')
@@ -147,7 +128,6 @@ def add_manual_entry(entries: list[dict], question_text: str, format: str, short
         'short_question': short_question,
         'options': [{'text': t, 'short': ''} for t in option_texts],
         'n_note': '',
-        'n_note_adopted': False,
         'matrix': '',
         'other_bucket': True,
         'has_native_other': False,
@@ -213,13 +193,12 @@ def to_review_dataframe(entries: list[dict]) -> pd.DataFrame:
             '形式': entry['format'],
             '短縮設問文': entry['short_question'], '短縮選択肢': '',
             '設問文': entry['question_text'], '選択肢': '',
-            'matrix': entry['matrix'], '採用': bool(entry.get('n_note_adopted')),
-            'n変化': entry['n_note'],
+            'matrix': entry['matrix'], 'n変化': entry['n_note'],
         })
         for opt in entry['options']:
             rows.append({
                 'ID': '', '必': '', '形式': '', '短縮設問文': '', '短縮選択肢': opt['short'],
-                '設問文': '', '選択肢': opt['text'], 'matrix': '', '採用': False, 'n変化': '',
+                '設問文': '', '選択肢': opt['text'], 'matrix': '', 'n変化': '',
             })
     # pandas 3.xの既定の文字列dtype（str）だと、st.data_editorでの表示時に空文字列が
     # "None"と表示されてしまう（Arrow変換周りの相性問題）。従来のobject dtypeに戻すことで
@@ -254,7 +233,6 @@ def apply_review_edits(edited_df: pd.DataFrame, entries: list[dict]) -> tuple[li
                 warnings.append(f'{rid}: 不明な形式「{new_format}」は無視しました（SA/MA/FAのいずれかを入力してください）')
             current_entry['short_question'] = str(row.get('短縮設問文') or '').strip()
             current_entry['matrix'] = str(row.get('matrix') or '').strip()
-            current_entry['n_note_adopted'] = bool(row.get('採用'))
             current_entry['n_note'] = str(row.get('n変化') or '').strip()
         else:
             if current_entry is None or option_index >= len(current_entry['options']):

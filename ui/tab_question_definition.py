@@ -85,7 +85,6 @@ def _render_question_definition(api_key: str) -> None:
             column_config={
                 'ID': st.column_config.TextColumn('ID', pinned=True),
                 '必': st.column_config.TextColumn('必', width='small'),
-                '採用': st.column_config.CheckboxColumn('採用', width='small'),
             },
         )
         return
@@ -93,9 +92,7 @@ def _render_question_definition(api_key: str) -> None:
     st.caption(
         'アンケートフォームのPDFから作成した設問定義表です。「設問文」「選択肢」列は変更できません。'
         '「形式」（SA/MA/FAを直接入力）「短縮設問文」「短縮選択肢」「matrix」「n変化」は自由に'
-        '編集できます。「採用」列は、その設問を下の「前提条件（分岐条件）の設定」に出すかどうかの'
-        'チェックです（n変化のメモの有無から初期値を提案しますが、AIが拾えなかった設問にも'
-        'チェックできます）。内容に問題がなければ「設問定義表の確定」を押してください（確定後は'
+        '編集できます。内容に問題がなければ「設問定義表の確定」を押してください（確定後は'
         '一覧表・グラフ・集計で短縮版が使われます。未確定のままなら原文が使われます）。'
     )
 
@@ -106,7 +103,6 @@ def _render_question_definition(api_key: str) -> None:
         column_config={
             'ID': st.column_config.TextColumn('ID', pinned=True),
             '必': st.column_config.TextColumn('必', width='small'),
-            '採用': st.column_config.CheckboxColumn('採用', width='small'),
         },
         # 形式にSelectboxColumnを使うと、同じ表内の他の空欄セルが"None"と表示されてしまう
         # Streamlitの既知の不具合があるため、自由入力＋apply_review_edits側での検証にしている。
@@ -254,24 +250,13 @@ def _preceding_gridable(entries: list[dict], target_id: str) -> dict | None:
 
 
 def _render_condition_editor(entry: dict, entries: list[dict], gate_candidates: list[dict],
-                              label_by_id: dict[str, str], key_prefix: str,
-                              default_on: bool = False, checkbox_label: str | None = None,
-                              help_text: str | None = None) -> None:
+                              label_by_id: dict[str, str]) -> None:
     """
-    entry1件分の前提条件チェックボックス＋ゲート設問・対象値の選択UIをコンパクトな2行構成
-    （1行目: チェックボックス（ラベル＝対象設問名）、2行目: ゲート設問＋対象回答を横並び）で
-    表示する（実装済み、2026-08-25。当初は縦積みで冗長という指摘を受け整理）。entryを直接
-    書き換える。
+    entry1件分の前提条件（ゲート設問＋対象回答の選択UIを横並び2列）を表示する。entryを
+    直接書き換える。選択された回答が空なら「条件なし」として扱う（別に有効/無効の
+    チェックボックスは持たない——このUI自体がアコーデオン内にあり、開閉と選択状態だけで
+    十分に意図を表せるため、2026-08-27に廃止した）。
     """
-    is_on = st.checkbox(
-        checkbox_label or label_by_id[entry['id']], value=default_on,
-        key=f'{key_prefix}_on_{entry["id"]}', help=help_text,
-    )
-    if not is_on:
-        entry['condition_entry_id'] = None
-        entry['condition_values'] = []
-        return
-
     gate_pool = [e for e in gate_candidates if e['id'] != entry['id']]
     if not gate_pool:
         st.caption('前提条件に使えるSA/MA設問がありません。')
@@ -288,7 +273,7 @@ def _render_condition_editor(entry: dict, entries: list[dict], gate_candidates: 
     with col1:
         gate_key = st.selectbox(
             '前提条件となる設問', keys_list, index=keys_list.index(default_key) if default_key else 0,
-            key=f'{key_prefix}_gate_{entry["id"]}', label_visibility='collapsed',
+            key=f'condition_gate_{entry["id"]}',
         )
     gate_entry = gate_keys[gate_key]
 
@@ -296,9 +281,8 @@ def _render_condition_editor(entry: dict, entries: list[dict], gate_candidates: 
     default_values = entry.get('condition_values', []) if entry.get('condition_entry_id') == gate_entry['id'] else []
     with col2:
         selected_values = st.multiselect(
-            '対象とする回答', option_texts, default=default_values,
-            key=f'{key_prefix}_values_{entry["id"]}', label_visibility='collapsed',
-            placeholder='対象とする回答を選択',
+            '対象とする回答（未選択なら前提条件なし）', option_texts, default=default_values,
+            key=f'condition_values_{entry["id"]}', placeholder='対象とする回答を選択',
         )
     entry['condition_entry_id'] = gate_entry['id'] if selected_values else None
     entry['condition_values'] = selected_values
@@ -306,7 +290,7 @@ def _render_condition_editor(entry: dict, entries: list[dict], gate_candidates: 
 
 def _render_condition_review(entries: list[dict]) -> None:
     """
-    分岐（スキップロジック）がある設問向けの前提条件設定（SPEC 5.4.3、2026-08-25）。
+    分岐（スキップロジック）がある設問向けの前提条件設定（SPEC 5.4.3）。
     「この設問は〈設問A〉が〈値〉の回答者のみが対象」という条件を設問ごとに設定できる。
     設定すると、この設問を対象設問として集計するとき（GT・クロスの対象側・トリプルクロスの
     対象側・一覧型クロスの対象側）、集計表に「回答条件あり」の表示と、本来の対象者数に対する
@@ -315,64 +299,47 @@ def _render_condition_review(entries: list[dict]) -> None:
     持っていても、RAWデータ上は「対象外の回答者は前提設問のセルも空欄のまま」になるため、
     直接の前提設問1段だけを見れば連鎖的な分岐も自動的に正しく絞り込める（再帰的な解決は不要）。
 
-    **設問定義表「採用」列との連携（2026-08-26、設計変更）**: 分岐箇所はフォームPDF/HTML
-    解析の時点でn_note（表の「n変化」列、フォームのセクション説明文言から拾った自由記述の
-    メモ）に既に記録されていることが多いが、n_noteは自由記述の自動抽出で精度に限界があり
-    （見落し・過剰検出とも実データで確認済み）、この抽出結果だけを機械的にレビュー対象へ
-    出すと精度の問題がそのまま画面に出てしまう。そのため「レビュー欄に出すかどうか」の
-    最終判断は設問定義表の「採用」チェックボックス（entryの`n_note_adopted`フィールド、
-    n変化列の左）に一本化した——初期値はn_noteの有無から提案するが、以後はチェックの
-    有無だけで決まる（n_noteの自動抽出はあくまで参考のヒントとして残るのみ）。全設問
-    （AIがn変化を拾えなかった設問・FAなど対象設問になれない形式も含む）にチェックボックスが
-    あり、チェックを入れるとこのレビュー欄に随時現れる。対象の回答値そのものは自由記述からは
-    機械的に確定できない（表現のブレがあり誤判定の方が実害が大きい）ため、引き続き人に
-    選んでもらう。ゲート設問は既定で直前の設問。
+    **選択肢型設問すべてを1つのアコーデオンにまとめる方式（2026-08-27、設計変更）**: n_noteの
+    自動抽出結果を使って対象を絞り込む・提案する試み（n_noteがある設問だけを一覧に出す→
+    さらに「採用」チェックボックスで人が決める、と2段階試したがどちらも実データで
+    見落し・過剰検出が再発した——n_noteはセクション見出しの文言に依存する自由記述の
+    自動抽出で、精度に本質的な限界があるため）。そのため対象の絞り込み自体をやめ、
+    集計軸になり得る設問（SA/MA、`gridable_questions`）を漏れなくすべて用意する方式にした。
+    当初は1問=1アコーデオン（`st.expander`）にしたが、「全部を1つのアコーデオンに」という
+    指摘を受け、外側を1つの`st.expander`にまとめ、中は`st.container(height=...)`で
+    スクロールするリストにした（Streamlitはexpanderの入れ子を許さないため、中の各設問は
+    アコーデオンではなく見出し＋区切り線の平たいリストにしている）。見出しには設問IDを
+    必ず添える（`Q8: ...`の形）。n_noteは各設問の直下に参考のヒントとして表示するのみで、
+    対象の取捨選択には一切使わない——設定するかどうかは完全に人が「n変化」列や設問文
+    そのものを見て判断する。既に前提条件が設定済みの設問は見出し自体に内容を表示する。
     """
     gate_candidates = gridable_questions(entries)
     if len(gate_candidates) < 1:
         return
 
-    st.markdown('##### 前提条件（分岐条件）の設定')
-    st.caption(
-        '設問定義表の「採用」列にチェックが入っている設問です。チェックを入れて対象の回答を'
-        '選ぶと、集計表に回答条件・回答率が表示されます（未チェックの設問は今まで通り全回答者を'
-        '対象に計算します）。ゲート設問は既定で直前の設問——チェックボックスにマウスを乗せると'
-        'n変化のメモ（あれば）が確認できます。'
-    )
-
     label_by_id = {e['id']: question_label(e) for e in entries}
-    noted_entries = [e for e in entries if e.get('n_note_adopted')]
-    if not noted_entries:
-        st.caption('設問定義表の「採用」列にチェックが入っている設問はありません。')
-    for entry in noted_entries:
-        note = entry.get('n_note', '').strip()
-        _render_condition_editor(
-            entry, entries, gate_candidates, label_by_id, key_prefix='condition_noted',
-            default_on=bool(entry.get('condition_entry_id')),
-            checkbox_label=label_by_id[entry['id']],
-            help_text=f'n変化のメモ: {note}' if note else None,
+    with st.expander('前提条件（分岐条件）の設定', expanded=False):
+        st.caption(
+            '選択肢型（SA/MA）の設問をすべて一覧にしています。分岐で対象者が絞られる設問だけ、'
+            '「前提条件となる設問」「対象とする回答」を設定してください（「n変化」にメモが'
+            'あれば、分岐条件のヒントとして表示します）。'
         )
-
-    # 「採用」チェックを外した後も前提条件そのものは残る（unchecked＝レビュー欄に出さない、
-    # だけの意味で、既存の設定を消すわけではない）。設定が残ったまま見えなくなって困らないよう、
-    # チェックが外れている設問の設定済み一覧＋解除ボタンだけは残す（対象設問の選び直しは
-    # 設問定義表の「採用」チェックで行うため、以前あった手動選択用のドロップダウンは廃止した）。
-    orphaned_configured = [
-        e for e in entries if e.get('condition_entry_id') and not e.get('n_note_adopted')
-    ]
-    if orphaned_configured:
-        with st.expander(f'⚠️ 「採用」チェックが外れているが前提条件が設定済みの設問（{len(orphaned_configured)}件）', expanded=True):
-            for entry in orphaned_configured:
-                gate_label = label_by_id.get(entry['condition_entry_id'], '（対応する設問なし）')
-                values = '、'.join(entry.get('condition_values', []))
-                col1, col2 = st.columns([6, 1])
-                with col1:
-                    st.write(f'- 「{label_by_id[entry["id"]]}」は「{gate_label}」が「{values}」の場合のみ対象')
-                with col2:
-                    if st.button('解除', key=f'condition_manual_clear_{entry["id"]}'):
-                        entry['condition_entry_id'] = None
-                        entry['condition_values'] = []
-                        st.rerun()
+        with st.container(height=500):
+            for i, entry in enumerate(gate_candidates):
+                note = entry.get('n_note', '').strip()
+                configured = bool(entry.get('condition_entry_id') and entry.get('condition_values'))
+                title = f'{entry["id"]}: {label_by_id[entry["id"]]}'
+                if configured:
+                    gate_label = label_by_id.get(entry['condition_entry_id'], '（対応する設問なし）')
+                    values = '、'.join(entry.get('condition_values', []))
+                    st.markdown(f'**✅ {title}** ——「{gate_label}」が「{values}」の場合のみ対象')
+                else:
+                    st.markdown(f'**{title}**')
+                if note:
+                    st.caption(f'n変化のメモ: {note}')
+                _render_condition_editor(entry, entries, gate_candidates, label_by_id)
+                if i < len(gate_candidates) - 1:
+                    st.divider()
 
 
 def _render_import(api_key: str) -> None:
