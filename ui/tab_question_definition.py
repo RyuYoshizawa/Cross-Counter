@@ -41,6 +41,20 @@ from core.usage_log import DEFAULT_FX_RATE, build_entry as build_log_entry, snap
 DRAFT_MODEL = 'claude-sonnet-5'
 _DEFAULT_INITIAL_ROWS = 50
 
+# 設問定義表（本体）の列幅（ユーザー提示の画像に合わせたピクセル指定、2026-08-27）。
+# 確定済み表示（st.dataframe）・編集表示（st.data_editor）の両方で共通に使う。
+_REVIEW_COLUMN_CONFIG = {
+    'ID': st.column_config.TextColumn('ID', pinned=True, width=60),
+    '必': st.column_config.TextColumn('必', width=55),
+    '形式': st.column_config.TextColumn('形式', width=90),
+    '短縮設問文': st.column_config.TextColumn('短縮設問文', width=200),
+    '短縮選択肢': st.column_config.TextColumn('短縮選択肢', width=190),
+    '設問文': st.column_config.TextColumn('設問文', width=190),
+    '選択肢': st.column_config.TextColumn('選択肢', width=150),
+    'matrix': st.column_config.TextColumn('matrix', width=80),
+    'n変化': st.column_config.TextColumn('n変化', width=90),
+}
+
 
 def render(columns: list[str], rows: list[dict], raw_filename: str, raw_encoding: str,
            excluded_row_ids: list[int], api_key: str) -> None:
@@ -66,62 +80,61 @@ def _render_question_definition(api_key: str) -> None:
     _render_definition_replace_upload(entries)
     _render_condition_review(entries)
 
+    # 設問定義表（本体）: 確定済み/未確定のどちらでも、表→切り替えボタン（確定・保護解除の
+    # トグル）＋「HTMLから作り直す」ボタン→（確定済みの場合のみ）確定済みメッセージ→
+    # ダウンロード推奨メッセージ、の順で並べる（2026-08-27、配置変更・添付画像の指摘を反映）。
+    if not confirmed:
+        st.caption(
+            'アンケートフォームのPDFから作成した設問定義表です。「設問文」「選択肢」列は変更できません。'
+            '「形式」（SA/MA/FAを直接入力）「短縮設問文」「短縮選択肢」「matrix」「n変化」は自由に'
+            '編集できます。内容に問題がなければ下の「設問定義表の確定」を押してください（確定後は'
+            '一覧表・グラフ・集計で短縮版が使われます。未確定のままなら原文が使われます）。'
+        )
+        review_df = to_review_dataframe(entries)
+        edited_df = st.data_editor(
+            review_df, width='stretch', height=500, hide_index=True, key='question_definition_editor',
+            disabled=['ID', '必', '設問文', '選択肢'],
+            column_config=_REVIEW_COLUMN_CONFIG,
+            # 形式にSelectboxColumnを使うと、同じ表内の他の空欄セルが"None"と表示されてしまう
+            # Streamlitの既知の不具合があるため、自由入力＋apply_review_edits側での検証にしている。
+            # 「必」（必須設問マーク）はフォーム自体から読み取った情報で人が編集するものではないため
+            # disabledに含める（2026-08-25、ユーザーとの合意事項）。
+        )
+    else:
+        st.dataframe(
+            to_review_dataframe(entries), width='stretch', height=500, hide_index=True,
+            column_config=_REVIEW_COLUMN_CONFIG,
+        )
+
+    col1, col2 = st.columns(2)
+    with col1:
+        if confirmed:
+            if st.button('🔓 保護を解除する', key='unlock_question_definition'):
+                st.session_state['question_definition_confirmed'] = False
+                st.rerun()
+        elif st.button('✅ 設問定義表の確定', type='primary', key='confirm_question_definition'):
+            updated_entries, warnings = apply_review_edits(edited_df, entries)
+            st.session_state['question_definition'] = updated_entries
+            st.session_state['question_definition_confirmed'] = True
+            if warnings:
+                st.session_state['_question_definition_warnings'] = warnings
+            st.rerun()
+    with col2:
+        source = st.session_state.get('question_definition_source', 'html')
+        label = '🆕 HTMLから作り直す' if source == 'html' else '🆕 PDFから作り直す'
+        if st.button(label, key='rebuild_question_definition'):
+            # form_html_bytes/form_pdf_bytesは消さない。サイドバーでアップロード済みの同じ
+            # ファイルを使って再作成する（別のファイルに差し替えたい場合はサイドバーで
+            # 新しいファイルを選び直せばよい）。
+            st.session_state['question_definition'] = []
+            st.rerun()
+
     if confirmed:
         st.success(
             '設問定義表は確定済みです。以降の一覧表・グラフ・集計では短縮設問文・短縮選択肢が'
             '使われます（空欄の項目は原文が使われます）。'
         )
         st.info('念のため、サイドバー下部からプロジェクトファイルをダウンロードしておくことをお勧めします。')
-        if st.button('🔓 保護を解除する', key='unlock_question_definition'):
-            st.session_state['question_definition_confirmed'] = False
-            st.rerun()
-        st.dataframe(
-            to_review_dataframe(entries), width='stretch', height=500, hide_index=True,
-            column_config={
-                'ID': st.column_config.TextColumn('ID', pinned=True),
-                '必': st.column_config.TextColumn('必', width='small'),
-            },
-        )
-    else:
-        st.caption(
-            'アンケートフォームのPDFから作成した設問定義表です。「設問文」「選択肢」列は変更できません。'
-            '「形式」（SA/MA/FAを直接入力）「短縮設問文」「短縮選択肢」「matrix」「n変化」は自由に'
-            '編集できます。内容に問題がなければ「設問定義表の確定」を押してください（確定後は'
-            '一覧表・グラフ・集計で短縮版が使われます。未確定のままなら原文が使われます）。'
-        )
-
-        review_df = to_review_dataframe(entries)
-        edited_df = st.data_editor(
-            review_df, width='stretch', height=500, hide_index=True, key='question_definition_editor',
-            disabled=['ID', '必', '設問文', '選択肢'],
-            column_config={
-                'ID': st.column_config.TextColumn('ID', pinned=True),
-                '必': st.column_config.TextColumn('必', width='small'),
-            },
-            # 形式にSelectboxColumnを使うと、同じ表内の他の空欄セルが"None"と表示されてしまう
-            # Streamlitの既知の不具合があるため、自由入力＋apply_review_edits側での検証にしている。
-            # 「必」（必須設問マーク）はフォーム自体から読み取った情報で人が編集するものではないため
-            # disabledに含める（2026-08-25、ユーザーとの合意事項）。
-        )
-
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button('✅ 設問定義表の確定', type='primary', key='confirm_question_definition'):
-                updated_entries, warnings = apply_review_edits(edited_df, entries)
-                st.session_state['question_definition'] = updated_entries
-                st.session_state['question_definition_confirmed'] = True
-                if warnings:
-                    st.session_state['_question_definition_warnings'] = warnings
-                st.rerun()
-        with col2:
-            source = st.session_state.get('question_definition_source', 'html')
-            label = '🆕 HTMLから作り直す' if source == 'html' else '🆕 PDFから作り直す'
-            if st.button(label, key='rebuild_question_definition'):
-                # form_html_bytes/form_pdf_bytesは消さない。サイドバーでアップロード済みの同じ
-                # ファイルを使って再作成する（別のファイルに差し替えたい場合はサイドバーで
-                # 新しいファイルを選び直せばよい）。
-                st.session_state['question_definition'] = []
-                st.rerun()
 
     # 確定（保護）済みでも、タイムスタンプ等の手動追加は行えるようにする——以前はここが
     # 未確定時のみ表示され、確定後は保護解除しないと追加できなかった（確定した状態で
