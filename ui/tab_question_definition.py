@@ -266,10 +266,14 @@ def _preceding_gridable(entries: list[dict], target_id: str) -> dict | None:
 def _render_condition_editor(entry: dict, entries: list[dict], gate_candidates: list[dict],
                               label_by_id: dict[str, str]) -> None:
     """
-    entry1件分の前提条件（ゲート設問＋対象回答の選択UIを横並び2列）を表示する。entryを
+    entry1件分の前提条件（ゲート設問＋対象回答の選択UI）を1行に収めて表示する。entryを
     直接書き換える。選択された回答が空なら「条件なし」として扱う（別に有効/無効の
     チェックボックスは持たない——このUI自体がアコーデオン内にあり、開閉と選択状態だけで
     十分に意図を表せるため、2026-08-27に廃止した）。
+    ラベルは各ウィジェットの上ではなく左に短く添える（`label_visibility='collapsed'`＋
+    隣接する小さな列にラベル文字だけを置く）ことで、見出し行と合わせて設問1件あたり2行
+    （見出し／設定行）に収める（2026-08-27、当初はラベルが独立した行になり3行だったのを
+    圧縮した）。
     """
     gate_pool = [e for e in gate_candidates if e['id'] != entry['id']]
     if not gate_pool:
@@ -283,20 +287,25 @@ def _render_condition_editor(entry: dict, entries: list[dict], gate_candidates: 
     default_gate_id = entry.get('condition_entry_id') or (_preceding_gridable(entries, entry['id']) or {}).get('id')
     default_key = next((k for k, e in gate_keys.items() if e['id'] == default_gate_id), None)
 
-    col1, col2 = st.columns(2)
-    with col1:
+    gate_label_col, gate_input_col, values_label_col, values_input_col = st.columns([1, 3, 1, 3])
+    with gate_label_col:
+        st.markdown('条件設問')
+    with gate_input_col:
         gate_key = st.selectbox(
             '前提条件となる設問', keys_list, index=keys_list.index(default_key) if default_key else 0,
-            key=f'condition_gate_{entry["id"]}',
+            key=f'condition_gate_{entry["id"]}', label_visibility='collapsed',
         )
     gate_entry = gate_keys[gate_key]
 
     option_texts = [o['text'] for o in gate_entry['options']]
     default_values = entry.get('condition_values', []) if entry.get('condition_entry_id') == gate_entry['id'] else []
-    with col2:
+    with values_label_col:
+        st.markdown('対象回答')
+    with values_input_col:
         selected_values = st.multiselect(
             '対象とする回答（未選択なら前提条件なし）', option_texts, default=default_values,
-            key=f'condition_values_{entry["id"]}', placeholder='対象とする回答を選択',
+            key=f'condition_values_{entry["id"]}', label_visibility='collapsed',
+            placeholder='対象とする回答を選択',
         )
     entry['condition_entry_id'] = gate_entry['id'] if selected_values else None
     entry['condition_values'] = selected_values
@@ -343,14 +352,18 @@ def _render_condition_review(entries: list[dict]) -> None:
                 note = entry.get('n_note', '').strip()
                 configured = bool(entry.get('condition_entry_id') and entry.get('condition_values'))
                 title = f'{entry["id"]}: {label_by_id[entry["id"]]}'
+                # 見出し行1行＋設定行1行の計2行に収める（2026-08-27、当初は見出し・n変化メモ・
+                # 設定行で3行になっていたのを圧縮した指摘を反映）。未設定の設問は見出しに
+                # 「対象回答が未設定の場合は前提条件なし」という固定の案内を添え、n変化のメモが
+                # あれば続けて同じ行に表示する。
                 if configured:
                     gate_label = label_by_id.get(entry['condition_entry_id'], '（対応する設問なし）')
                     values = '、'.join(entry.get('condition_values', []))
                     st.markdown(f'**✅ {title}** ——「{gate_label}」が「{values}」の場合のみ対象')
                 else:
-                    st.markdown(f'**{title}**')
-                if note:
-                    st.caption(f'n変化のメモ: {note}')
+                    hint = f'対象回答が未設定の場合は前提条件なし（n変化のメモ: {note}）' if note else \
+                        '対象回答が未設定の場合は前提条件なし'
+                    st.markdown(f'**{title}**　{hint}')
                 _render_condition_editor(entry, entries, gate_candidates, label_by_id)
                 if i < len(gate_candidates) - 1:
                     st.divider()
